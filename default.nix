@@ -7,5 +7,5 @@ with pkgs;
 stdenv.mkDerivation {
   name = "midipush";
   src = ./.;
-  buildInputs = [ rtmidi ];
+  buildInputs = [ python alsaLib ];
 }

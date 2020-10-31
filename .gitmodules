@@ -1,3 +1,0 @@
-[submodule "dtask"]
-	path = dtask
-	url = git@github.com:google/dtask.git
