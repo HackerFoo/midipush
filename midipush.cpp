@@ -23,7 +23,7 @@ int main() {
     std::cout << "No ports available!\n";
     return 0;
   }
-  midiin->openPort(0);
+  midiin->openPort(nPorts-1);
 
   // Set our callback function.  This should be done immediately after
   // opening the port to avoid having incoming messages written to the
