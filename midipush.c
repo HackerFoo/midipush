@@ -3,14 +3,24 @@
 #include <stdint.h>
 
 #include "dtask.h"
+#include "types.h"
 
 #ifndef DTASK_GEN
 #include "midi_tasks.h"
 #endif
 
+#include "startle/types.h"
+#include "startle/macros.h"
+#include "startle/support.h"
+#include "startle/log.h"
+#include "startle/error.h"
+#include "startle/test.h"
+#include "startle/map.h"
+#include "startle/stats_types.h"
+#include "startle/stats.h"
+
 static midi_tasks_state_t state = DTASK_STATE(midi_tasks, 0, 0);
 static dtask_set_t initial = 0;
-
 
 int main(int argc, char *argv[]) {
   int status;
@@ -29,15 +39,8 @@ int main(int argc, char *argv[]) {
     if ((status = snd_rawmidi_read(midiin, &c, 1)) < 0) {
       printf("Problem reading MIDI input: %s\n", snd_strerror(status));
     }
-    if ((unsigned char)c >= 0x80) { // command byte: print in hex
-      printf("0x%x ", (unsigned char)buffer[0]);
-    } else {
-      printf("%d ", (unsigned char)buffer[0]);
-    }
+    // ...
     fflush(stdout);
-    if (count % 20 == 0) { // print a newline to avoid line-wrapping
-      printf("\n");
-    }
   }
 
   snd_rawmidi_close(midiin);
