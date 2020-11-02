@@ -29,6 +29,7 @@
 #include "startle/macros.h"
 #include "startle/error.h"
 #include "startle/log.h"
+#include "startle/static_alloc.h"
 
 static bool breakpoint_disabled = false;
 
@@ -53,8 +54,8 @@ typedef struct {
 } error_t;
 
 #define assert_msg(...) DISPATCH(assert_msg, ##__VA_ARGS__)
-#define assert_msg_1(cond, ...) "Assertion `" #cond "' failed."
-#define assert_msg_2(cond, fmt, ...) "Assertion `" #cond "' failed: " fmt
+#define assert_msg_1(cond, ...) "Assertion `" cond "' failed."
+#define assert_msg_2(cond, fmt, ...) "Assertion `" cond "' failed: " fmt
 #define assert_msg_3(cond, fmt, ...) assert_msg_2(cond, fmt)
 #define assert_msg_4(cond, fmt, ...) assert_msg_2(cond, fmt)
 #define assert_msg_5(cond, fmt, ...) assert_msg_2(cond, fmt)
@@ -71,7 +72,7 @@ typedef struct {
   do {                                                  \
     if(!(cond)) {                                       \
       throw_error(ERROR_TYPE_LIMITATION,                \
-                  assert_msg(cond, ##__VA_ARGS__),      \
+                  assert_msg(#cond, ##__VA_ARGS__),     \
                   ##__VA_ARGS__);                       \
     }                                                   \
   } while(0)
@@ -82,14 +83,14 @@ typedef struct {
 #ifdef NDEBUG
 #define assert_error(...) ((void)0)
 #else
-#define assert_error(...) _assert_error(__VA_ARGS__)
+#define assert_error(cond, ...) _assert_error(cond, #cond, __VA_ARGS__)
 #endif
 
-#define _assert_error(cond, ...)                        \
+#define _assert_error(cond, cond_str, ...)              \
   do {                                                  \
     if(!(cond)) {                                       \
       throw_error(ERROR_TYPE_UNEXPECTED,                \
-                  assert_msg(cond, ##__VA_ARGS__),      \
+                  assert_msg(cond_str, ##__VA_ARGS__),  \
                   ##__VA_ARGS__);                       \
     }                                                   \
   } while(0)
@@ -98,7 +99,7 @@ typedef struct {
 #ifdef NDEBUG
 #define on_assert_error(...) if(0)
 #else
-#define on_assert_error(...) _on_assert_error(__VA_ARGS__)
+#define on_assert_error(cond, ...) _on_assert_error(cond, #cond, __VA_ARGS__)
 #endif
 
 /* Some explanation:
@@ -116,10 +117,10 @@ typedef struct {
  *
  * There will be no looping since throw_error() will longjmp out at the end.
  */
-#define _on_assert_error(cond, ...)                     \
-  for(;!(cond);                                         \
-      ({throw_error(ERROR_TYPE_UNEXPECTED,              \
-                    assert_msg(cond, ##__VA_ARGS__),    \
+#define _on_assert_error(cond, cond_str, ...)                   \
+  for(;!(cond);                                                 \
+      ({throw_error(ERROR_TYPE_UNEXPECTED,                      \
+                    assert_msg(cond_str, ##__VA_ARGS__),        \
                     ##__VA_ARGS__);}))
 
 
@@ -129,14 +130,14 @@ typedef struct {
 #ifdef NDEBUG
 #define assert_warn(...) ((void)0)
 #else
-#define assert_warn(...) _assert_warn(__VA_ARGS__)
+#define assert_warn(cond, ...) _assert_warn(cond, #cond, __VA_ARGS__)
 #endif
 
 #define _assert_warn(cond, ...)                 \
   do {                                          \
     if(!(cond)) {                               \
       LOG(MARK("WARN") " "                      \
-          assert_msg(cond, ##__VA_ARGS__)       \
+          assert_msg(cond_str, ##__VA_ARGS__)   \
           DROP(__VA_ARGS__));                   \
       breakpoint();                             \
     }                                           \
@@ -173,8 +174,8 @@ typedef struct {
     __typeof__(y) _y = (y);                                     \
     if(!(_x op _y)) {                                           \
       throw_error(ERROR_TYPE_UNEXPECTED,                        \
-                  "Assertion `" #x " " #op " " #y               \
-                  "' failed: %d, %d", X, (int)_x, (int)_y);     \
+                  "Assertion `" #x "' [%d] " #op " `" #y        \
+                  "' [%d] failed.", X, (int)_x, (int)_y);       \
     }                                                           \
   } while(0)
 #endif
@@ -193,6 +194,7 @@ typedef struct {
 #define catch_error_1(e) catch_error_2(e, false)
 #define catch_error_2(e, q) (current_error = (e), current_error->quiet = (q), !!setjmp((e)->env))
 #define catch_error(...) DISPATCH(catch_error, __VA_ARGS__)
+#define CATCH(...) SHADOW(current_error) if(catch_error(__VA_ARGS__))
 
 /** Throw an error of a particular type.
  * Returns the error type and logs the following arguments.
@@ -221,10 +223,9 @@ void return_error(error_type_t type) {
 }
 
 TEST(error) {
-  error_t *prev_error = current_error;
   /** [error] */
   error_t test_error;
-  if(catch_error(&test_error)) {
+  CATCH(&test_error) {
     printf(NOTE("TEST") " ");
     print_last_log_msg();
   } else {
@@ -234,7 +235,6 @@ TEST(error) {
     }
   }
   /** [error] */
-  current_error = prev_error;
   return 0;
 }
 
@@ -255,13 +255,14 @@ void breakpoint() {
   }
 }
 
-static unsigned int counters[8] = {0};
+STATIC_ALLOC(counters, unsigned int, 8);
 static unsigned int counters_n = 0;
 
 unsigned int *alloc_counter() {
-  assert_error(counters_n < LENGTH(counters));
+  assert_error(counters_n < counters_size);
   return &counters[counters_n++];
 }
+
 void reset_counters() {
-  zero(counters);
+  static_zero(counters);
 }

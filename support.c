@@ -17,13 +17,16 @@
 
 #include <string.h>
 #include <stdlib.h>
-#include <stdio.h>
 #include <inttypes.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <fcntl.h>
 #include <unistd.h>
 #include <stdbool.h>
+
+#if INTERFACE
+#include <stdio.h>
+#endif
 
 #include "startle/types.h"
 #include "startle/macros.h"
@@ -37,13 +40,25 @@
  *  @brief Generally useful functions
  */
 
+#if INTERFACE
+#define RANGE_ALL_INIT { .min = INTPTR_MIN, .max = INTPTR_MAX }
+#define RANGE_ALL ((range_t)RANGE_ALL_INIT)
+#define RANGE_NONE_INIT { .min = INTPTR_MAX, .max = INTPTR_MIN }
+#define RANGE_NONE ((range_t)RANGE_NONE_INIT)
+#define RANGE_POS_INIT { .min = 0, .max = INTPTR_MAX }
+#define RANGE_POS ((range_t)RANGE_POS_INIT)
+#endif
+
+#define KEY(ptr) (*(uintptr_t *)(ptr))
+#define INDEX(ptr, width, i) ((void *)((char *)(ptr) + (width) * (i)))
+
 /** Estimate the median of an array */
-unsigned int median3(pair_t *array, unsigned int lo, unsigned int hi) {
-  unsigned int mid = lo + (hi - lo) / 2;
-  uint32_t
-    a = array[lo].first,
-    b = array[mid].first,
-    c = array[hi].first;
+unsigned int median3(void *array, size_t width, size_t lo, size_t hi) {
+  size_t mid = lo + (hi - lo) / 2;
+  uintptr_t
+    a = KEY(INDEX(array, width, lo)),
+    b = KEY(INDEX(array, width, mid)),
+    c = KEY(INDEX(array, width, hi));
   if(a < b) {
     if(a < c) {
       if (b < c) {
@@ -103,7 +118,7 @@ void print_string_pairs(pair_t *array, size_t len) {
 TEST(sort) {
   /** [sort] */
   pair_t array[] = {{3, 0}, {7, 1}, {2, 2}, {4, 3}, {500, 4}, {0, 5}, {8, 6}, {4, 7}};
-  quicksort(array, LENGTH(array));
+  quicksort(array, WIDTH(array), LENGTH(array));
   uintptr_t last = array[0].first;
   printf("{{%d, %d}", (int)array[0].first, (int)array[0].second);
   RANGEUP(i, 1, LENGTH(array)) {
@@ -127,36 +142,44 @@ TEST(sort) {
 /** Use the Quicksort algorithm to sort an array of pairs by the first element.
  * @snippet support.c sort
  */
-void quicksort(pair_t *array, unsigned int size) {
+void quicksort(void *array, size_t width, size_t size) {
   if(size <= 1) return;
 
   unsigned int lo = 0, hi = size-1;
   struct frame {
     unsigned int lo, hi;
   } stack[size-1];
+  void
+    *pivot_value = alloca(width),
+    *buf = alloca(width);
   struct frame *top = stack;
 
   for(;;) {
-    pair_t
-      *pivot = &array[median3(array, lo, hi)],
-      *right = &array[hi],
-      *left = &array[lo],
+    void
+      *pivot = INDEX(array, width, median3(array, width, lo, hi)),
+      *right = INDEX(array, width, hi),
+      *left = INDEX(array, width, lo),
       *x = left;
-    pair_t pivot_value = *pivot;
-    *pivot = *right;
+    memcpy(pivot_value, pivot, width);
+    memcpy(pivot, right, width);
     unsigned int fill_index = lo;
 
     RANGEUP(i, lo, hi) {
-      if(x->first < pivot_value.first) {
-        swap(x, left);
-        left++;
+      if(KEY(x) < KEY(pivot_value)) {
+
+        // swap
+        memcpy(buf, x, width);
+        memcpy(x, left, width);
+        memcpy(left, buf, width);
+
+        left = INDEX(left, width, 1);
         fill_index++;
       }
-      x++;
+      x = INDEX(x, width, 1);
     }
-    *right = *left;
+    memcpy(right, left, width);
 
-    *left = pivot_value;
+    memcpy(left, pivot_value, width);
 
     if(hi > fill_index + 1) {
       top->lo = fill_index+1;
@@ -194,7 +217,8 @@ pair_t *find(pair_t *array, size_t size, uintptr_t key) {
 }
 
 /** Like `find`, but find the last match.
- * O(log n) time.
+ * O(log n + m) time, where m is the most entries with the same key.
+ * *est is the estimated location
  */
 pair_t *find_last(pair_t *array, size_t size, uintptr_t key, size_t *est) {
   size_t low = 0, high = size;
@@ -257,6 +281,11 @@ int segcmp(const char *str, seg_t seg) {
   return *a;
 }
 
+/** Return a character from a seg_t if it is a single character, otherwise '\0'. */
+char seg_char(seg_t seg) {
+  return seg.n == 1 ? *seg.s : '\0';
+}
+
 /** Like `find`, but find the last match, with a string segment key.
  * O(log n) time.
  */
@@ -298,6 +327,11 @@ seg_t seg_after(seg_t s, char c) {
   }
   s.n = end - s.s;
   return s;
+}
+
+/** Test if `b` immediately follows `a`. */
+bool seg_adjacent(seg_t a, seg_t b) {
+  return a.s && b.s && a.s + a.n == b.s;
 }
 
 /** Create a string segment from a C string. */
@@ -387,6 +421,7 @@ void *lookup_linear(void *table, size_t width, size_t rows, seg_t key_seg) {
 
 #if INTERFACE
 struct mmfile {
+  int dirfd; /**< Directory file descriptor */
   const char *path; /**< File path */
   int fd; /**< File descriptor */
   size_t size; /**< Size in bytes, set by mmap_file */
@@ -402,7 +437,7 @@ struct mmfile {
  * @snippet support.c mmap_file
  */
 bool mmap_file(struct mmfile *f) {
-  f->fd = open(f->path, f->read_only ? O_RDONLY : O_RDWR);
+  f->fd = openat(f->dirfd ? f->dirfd : AT_FDCWD, f->path, f->read_only ? O_RDONLY : O_RDWR);
   if(f->fd < 0) return false;
   struct stat file_info;
   if(fstat(f->fd, &file_info) < 0) return false;
@@ -498,12 +533,12 @@ bool find_line(const char *x, const char **s, size_t *size) {
 
 /** Integer log2 */
 unsigned int int_log2(unsigned int x) {
-  return x <= 1 ? 0 : (sizeof(x) * 8) - __builtin_clz(x - 1);
+  return x <= 1 ? 0 : sizeof_bits(x) - __builtin_clz(x - 1);
 }
 
 /** Long integer log2 */
 unsigned int int_log2l(long unsigned int x) {
-  return x <= 1 ? 0 : (sizeof(x) * 8) - __builtin_clzl(x - 1);
+  return x <= 1 ? 0 : sizeof_bits(x) - __builtin_clzl(x - 1);
 }
 
 /** Insert into a set.
@@ -542,6 +577,17 @@ bool set_insert(uintptr_t x, uintptr_t *set, size_t size) {
   return false;
 }
 
+size_t squeeze(uintptr_t *set, size_t size) {
+  uintptr_t *end = set + size;
+  uintptr_t *r = set;
+  while(r < end && *r) r++;
+  uintptr_t *l = r;
+  while(r < end) {
+    if(*r) *l++ = *r;
+    r++;
+  }
+  return l - set;
+}
 
 /** Return if an item is in the set.
  * O(1) time.
@@ -629,7 +675,7 @@ char *arguments(int argc, char **argv) {
   COUNTUP(i, argc) {
     char *a = argv[i];
     char *np = stpcpy(p, a);
-    if(*a == '-') {
+    if(a[0] == '-' && is_letter(a[1])) {
       *p = ':';
       if(i) {
         *(p-1) = '\n';
@@ -667,14 +713,44 @@ int next_bit(uintptr_t *mask) {
   }
 }
 
+/** Replace the first occurrence of a character. */
 char *replace_char(char *s, char c_old, char c_new) {
-  char *r = strchr(s, c_old);
-  if(r) *r = c_new;
-  return r;
+  char *p = s;
+  while(*p) {
+    if(*p == c_old) {
+      *p = c_new;
+      break;
+    }
+    p++;
+  }
+  return s;
+}
+
+/** Replace all occurrences of a character. */
+char *replace_all_char(char *s, char c_old, char c_new) {
+  char *p = s;
+  while(*p) {
+    if(*p == c_old) {
+      *p = c_new;
+    }
+    p++;
+  }
+  return s;
+}
+
+TEST(replace_char) {
+  char buf[] = "apples and bananas";
+  printf("%s\n", replace_char(buf, 'p', 'P'));
+  printf("%s\n", replace_all_char(buf, 'a', 'o'));
+  return 0;
 }
 
 bool is_whitespace(char c) {
   return ONEOF(c, ' ', '\n', '\r', '\t');
+}
+
+bool is_letter(char c) {
+  return INRANGE(c, 'a', 'z') || INRANGE(c, 'A', 'Z');
 }
 
 seg_t seg_trim(seg_t s) {
@@ -785,7 +861,7 @@ TEST(unescape_string) {
   return segcmp(out, unescaped) == 0 ? 0 : -1;
 }
 
-size_t escape_string(char *dst, size_t n, seg_t str) {
+size_t escape_string(char *dst, size_t n, seg_t str, bool xml) {
   char *d = dst;
   const char
     *s = str.s,
@@ -794,7 +870,34 @@ size_t escape_string(char *dst, size_t n, seg_t str) {
   while(s < s_end && d < d_end) {
     char c = *s++;
     if(INRANGE(c, 32, 126) && c != '\\') {
-      *d++ = c;
+      if(xml) {
+        char *out = NULL;
+        int out_n = 0;
+
+#define CASE(c, res)                            \
+        case c:                                 \
+          out = res;                            \
+          out_n = sizeof(res) - 1;              \
+          break
+
+        switch(c) {
+          CASE('<', "&lt;");
+          CASE('>', "&gt;");
+          CASE('"', "&quot;");
+          CASE('`', "&apos;");
+          CASE('&', "&amp;");
+        }
+#undef CASE
+        if(out) {
+          if(d + out_n >= d_end) break;
+          memcpy(d, out, out_n);
+          d += out_n;
+        } else {
+          *d++ = c;
+        }
+      } else {
+        *d++ = c;
+      }
     } else {
       if(d + 1 >= d_end) break;
       switch(c) {
@@ -827,29 +930,33 @@ size_t escape_string(char *dst, size_t n, seg_t str) {
 }
 
 TEST(escape_string) {
-  char out[32];
-  seg_t escaped = SEG("test\\n\\\\string\\bG\\0stuff\\x1b");
-  seg_t unescaped = SEG("test\n\\string\bG\0stuff\x1b");
-  escape_string(out, sizeof(out), unescaped);
+  char out[64];
+  seg_t escaped = SEG("test\\n\\\\string\\bG\\0stuff\\x1b&amp;t");
+  seg_t unescaped = SEG("test\n\\string\bG\0stuff\x1b&t");
+  escape_string(out, sizeof(out), unescaped, true);
   printf("%s\n", out);
   return segcmp(out, escaped) == 0 ? 0 : -1;
 }
 
-void print_escaped_string(seg_t str) {
+void fprintf_escaped_string(FILE *f, seg_t str, bool xml) {
   char buf[64];
   while(str.n > 16) {
-    escape_string(buf, sizeof(buf), (seg_t) { .s = str.s, .n = 16 });
-    printf("%s", buf);
+    escape_string(buf, sizeof(buf), (seg_t) { .s = str.s, .n = 16 }, xml);
+    fprintf(f, "%s", buf);
     str.s += 16;
     str.n -= 16;
   }
-  escape_string(buf, sizeof(buf), str);
-  printf("%s", buf);
+  escape_string(buf, sizeof(buf), str, xml);
+  fprintf(f, "%s", buf);
+}
+
+void print_escaped_string(seg_t str, bool xml) {
+  fprintf_escaped_string(stdout, str, xml);
 }
 
 TEST(print_escaped_string) {
-  seg_t unescaped = SEG("test\n\\string\bG\0stuff");
-  print_escaped_string(unescaped);
+  seg_t unescaped = SEG("test\n\\string\bG\0stuff&");
+  print_escaped_string(unescaped, true);
   printf("\n");
   return 0;
 }
@@ -881,12 +988,25 @@ TEST(append_data_to) {
   return x.data == x.hdr.data ? 0 : -1;
 }
 
+ring_buffer_t *rb_init(char *mem, size_t n) {
+  if(n < sizeof(ring_buffer_t)) return NULL;
+  ring_buffer_t *rb = (ring_buffer_t *)mem;
+  rb->head = 0;
+  rb->tail = 0;
+  rb->size = n - sizeof(ring_buffer_t);
+  return rb;
+}
+
 size_t rb_available(const ring_buffer_t *rb) {
   return (rb->size + rb->head - rb->tail) % rb->size;
 }
 
 size_t rb_capacity(const ring_buffer_t *rb) {
   return rb->size - rb_available(rb) - 1;
+}
+
+void rb_clear(ring_buffer_t *rb) {
+  rb->tail = rb->head;
 }
 
 size_t rb_write(ring_buffer_t *rb, const char *src, size_t size) {
@@ -979,4 +1099,369 @@ TEST(seg_find_char) {
 
 char capitalize(char c) {
   return INRANGE(c, 'a', 'z') ? c - ('a' - 'A') : c;
+}
+
+range_t range_intersect(range_t a, range_t b) {
+  return (range_t) {
+    .min = max(a.min, b.min),
+    .max = min(a.max, b.max)
+  };
+}
+
+bool range_empty(range_t a) {
+  return a.min > a.max;
+}
+
+range_t range_union(range_t a, range_t b) {
+  if(range_empty(b)) return a;
+  if(range_empty(a)) return b;
+  return (range_t) {
+    .min = min(a.min, b.min),
+    .max = max(a.max, b.max)
+  };
+}
+
+bool range_singleton(range_t a) {
+  return a.min == a.max;
+}
+
+#if INTERFACE
+#define RANGE_1(x)                              \
+  ({                                            \
+    __typeof__(x) __x = (x);                    \
+    (range_t) { .min = __x, .max = __x };       \
+  })
+#define RANGE_2(lo, hi) ((range_t) { .min = (lo), .max = (hi) })
+#define RANGE(...) DISPATCH(RANGE, __VA_ARGS__)
+#endif
+
+bool range_eq(range_t a, range_t b) {
+  return
+    a.min == b.min &&
+    a.max == b.max;
+}
+
+intptr_t range_span(range_t a) {
+  return a.max >= a.min ? sat_subi(a.max, a.min) + 1 : 0;
+}
+
+bool range_has_lower_bound(range_t a) {
+  return a.min != INTPTR_MIN;
+}
+
+bool range_has_upper_bound(range_t a) {
+  return a.max != INTPTR_MAX;
+}
+
+bool range_bounded(range_t a) {
+  return
+    range_has_lower_bound(a) &&
+    range_has_upper_bound(a);
+}
+
+range_t range_bits(int b) {
+  if(b == 0) {
+    return (range_t) {
+      .min = 0,
+      .max = 0
+    };
+  } else if(b < 0) {
+    if(b <= -(int)sizeof_bits(intptr_t))
+      return RANGE_ALL;
+    int w = -b - 1;
+    return (range_t) {
+      .min = -(((intptr_t)1) << w),
+        .max = (((intptr_t)1) << w) - 1
+    };
+  } else {
+    if(b >= (int)sizeof_bits(intptr_t) - 1)
+      return RANGE_POS;
+    return (range_t) {
+      .min = 0,
+      .max = (((intptr_t)1) << b) - 1
+    };
+  }
+}
+
+bool range_partially_bounded(range_t a) {
+  return
+    range_has_lower_bound(a) ||
+    range_has_upper_bound(a);
+}
+
+intptr_t sign(intptr_t x) {
+  return x < 0 ? -1 :
+    x > 0 ? 1 : 0;
+}
+
+intptr_t div_min(intptr_t n, intptr_t d) {
+  return (n < 0) == (d < 0) ? n / d :
+    sat_sub(n, d - sign(d)) / d;
+}
+
+intptr_t div_mini(intptr_t n, intptr_t d) {
+  if(n == INTPTR_MAX) return INTPTR_MAX;
+  if(n == INTPTR_MIN) return INTPTR_MIN;
+  return div_min(n, d);
+}
+
+intptr_t div_max(intptr_t n, intptr_t d) {
+  return (n < 0) != (d < 0) ? n / d :
+    sat_add(n, d - sign(d)) / d;
+}
+
+intptr_t div_maxi(intptr_t n, intptr_t d) {
+  if(n == INTPTR_MAX) return INTPTR_MAX;
+  if(n == INTPTR_MIN) return INTPTR_MIN;
+  return div_max(n, d);
+}
+
+intptr_t div_i(intptr_t n, intptr_t d) {
+  if(n == INTPTR_MAX) return INTPTR_MAX;
+  if(n == INTPTR_MIN) return INTPTR_MIN;
+  return n / d;
+}
+
+intptr_t sat_abs(intptr_t x) {
+  if(x == INTPTR_MIN) return INTPTR_MAX;
+  return x < 0 ? -x : x;
+}
+
+intptr_t sat_neg(intptr_t x) {
+  if(x == INTPTR_MIN) return INTPTR_MAX;
+  return -x;
+}
+
+intptr_t sat_negi(intptr_t x) {
+  if(x == INTPTR_MIN) return INTPTR_MAX;
+  if(x == INTPTR_MAX) return INTPTR_MIN;
+  return -x;
+}
+
+#define SHOW(expr, expected)                                            \
+  {                                                                     \
+    intptr_t x = (expr);                                                \
+    intptr_t e = (expected);                                            \
+    bool pass = x == e;                                                 \
+    printf(#expr " = %" PRIdPTR ", expected %" PRIdPTR ": %s\n",        \
+           x, e, pass ? "PASS" : "FAIL");                               \
+    if(!pass) ret = -1;                                                 \
+  }
+
+TEST(div_min_max) {
+  int ret = 0;
+  SHOW(div_min(5, 3), 1);
+  SHOW(div_min(-5, 3), -2);
+  SHOW(div_min(5, -3), -2);
+  SHOW(div_min(-5, -3), 1);
+
+  SHOW(div_max(5, 3), 2);
+  SHOW(div_max(-5, 3), -1);
+  SHOW(div_max(5, -3), -1);
+  SHOW(div_max(-5, -3), 2);
+
+  SHOW(div_min(2, 2), 1);
+  SHOW(div_min(2, -2), -1);
+  SHOW(div_min(-2, 2), -1);
+  SHOW(div_min(-2, -2), 1);
+  SHOW(div_max(2, 2), 1);
+  SHOW(div_max(2, -2), -1);
+  SHOW(div_max(-2, 2), -1);
+  SHOW(div_max(-2, -2), 1);
+
+  return ret;
+}
+
+intptr_t sat_add(intptr_t x, intptr_t y) {
+  if(x >= 0) {
+    if(y > INTPTR_MAX - x) return INTPTR_MAX;
+  } else {
+    if(y < INTPTR_MIN - x) return INTPTR_MIN;
+  }
+  return x + y;
+}
+
+intptr_t sat_addi(intptr_t x, intptr_t y) {
+  if(ONEOF(INTPTR_MAX, x, y)) return INTPTR_MAX;
+  if(ONEOF(INTPTR_MIN, x, y)) return INTPTR_MIN;
+  return sat_add(x, y);
+}
+
+TEST(sat_arith) {
+  int ret = 0;
+  SHOW(sat_add(INTPTR_MIN, INTPTR_MIN), INTPTR_MIN);
+  SHOW(sat_add(INTPTR_MAX, INTPTR_MIN), -1);
+  SHOW(sat_add(INTPTR_MIN, INTPTR_MAX), -1);
+  SHOW(sat_add(INTPTR_MAX, INTPTR_MAX), INTPTR_MAX);
+
+  SHOW(sat_sub(INTPTR_MIN, INTPTR_MIN), 0);
+  SHOW(sat_sub(INTPTR_MAX, INTPTR_MIN), INTPTR_MAX);
+  SHOW(sat_sub(INTPTR_MIN, INTPTR_MAX), INTPTR_MIN);
+  SHOW(sat_sub(INTPTR_MAX, INTPTR_MAX), 0);
+
+  SHOW(sat_mul(INTPTR_MIN, 2), INTPTR_MIN);
+  SHOW(sat_mul(INTPTR_MAX, 2), INTPTR_MAX);
+  SHOW(sat_mul(2, INTPTR_MIN), INTPTR_MIN);
+  SHOW(sat_mul(2, INTPTR_MAX), INTPTR_MAX);
+  SHOW(sat_mul(INTPTR_MIN, -2), INTPTR_MAX);
+  SHOW(sat_mul(INTPTR_MAX, -2), INTPTR_MIN);
+  SHOW(sat_mul(-2, INTPTR_MIN), INTPTR_MAX);
+  SHOW(sat_mul(-2, INTPTR_MAX), INTPTR_MIN);
+  return ret;
+}
+
+intptr_t sat_sub(intptr_t x, intptr_t y) {
+  if(x >= 0) {
+    if(y < x - INTPTR_MAX) return INTPTR_MAX;
+  } else {
+    if(y > x - INTPTR_MIN) return INTPTR_MIN;
+  }
+  return x - y;
+}
+
+intptr_t sat_subi(intptr_t x, intptr_t y) {
+  if(x == INTPTR_MAX || y == INTPTR_MIN) return INTPTR_MAX;
+  if(x == INTPTR_MIN || y == INTPTR_MAX) return INTPTR_MIN;
+  return sat_sub(x, y);
+}
+
+intptr_t sat_mul(intptr_t x, intptr_t y) {
+  if(x == 0 || y == 0) return 0;
+  intptr_t low_limit = x > 0 ? INTPTR_MIN : INTPTR_MAX;
+  intptr_t high_limit = x > 0 ? INTPTR_MAX : INTPTR_MIN;
+  intptr_t min_y = div_max(low_limit, x);
+  if(y < min_y) return low_limit;
+  intptr_t max_y = div_min(high_limit, x);
+  if(y > max_y) return high_limit;
+  return x * y;
+}
+
+intptr_t sat_muli(intptr_t x, intptr_t y) {
+  if(x == 0 || y == 0) return 0;
+  if(ONEOF(x, INTPTR_MIN, INTPTR_MAX) ||
+     ONEOF(x, INTPTR_MIN, INTPTR_MAX)) {
+    return (x > 0) == (y > 0) ?
+      INTPTR_MAX : INTPTR_MIN;
+  }
+  return sat_mul(x, y);
+}
+
+seg_t seg_range(seg_t a, seg_t b) {
+  if(!b.s) {
+    return a;
+  } else if(!a.s) {
+    return b;
+  } else {
+    const char *l = min(a.s, b.s);
+    const char *r = max(seg_end(a), seg_end(b));
+    return (seg_t) {
+      .s = l,
+      .n = r - l
+    };
+  }
+}
+
+TEST(seg_range) {
+  const char *text = "just some random words";
+  seg_t
+    just = (seg_t) { .s = text, .n = 4 },
+    some = (seg_t) { .s = text + 5, .n = 4 },
+    random = (seg_t) { .s = text + 10, .n = 6 },
+    words = (seg_t) { .s = text + 17, .n = 5 };
+
+#define SEG_RANGE_TEST(c, a, b)                                         \
+    c = seg_range(a, b);                                                \
+    printf("\"%.*s\" + \"%.*s\" = \"%.*s\"\n", (int)a.n, a.s, (int)b.n, b.s, (int)c.n, c.s)
+
+    seg_t a, b, c, d, e = { .s = NULL };
+    SEG_RANGE_TEST(a, random, just);
+    SEG_RANGE_TEST(b, some, words);
+    SEG_RANGE_TEST(c, a, b);
+    SEG_RANGE_TEST(d, e, c);
+#undef SEG_RANGE_TEST
+    return 0;
+}
+
+size_t flatten_ranges(uintptr_t *l, uintptr_t *r, pair_t *res, size_t n) {
+  quicksort(l, WIDTH(l), n);
+  quicksort(r, WIDTH(r), n);
+  int depth = 0;
+  size_t out_n = 0;
+  uintptr_t *l_end = l + n;
+  LOOP(n * 2) {
+    if(l >= l_end || *l > *r) {
+      depth--;
+      if(!depth) {
+        res->second = *r;
+        res++;
+        out_n++;
+      }
+      r++;
+    } else if (*l < *r) {
+      if(!depth) {
+        res->first = *l;
+      }
+      depth++;
+      l++;
+    } else { // *l == *r
+      l++;
+      r++;
+    }
+  }
+  return out_n;
+}
+
+TEST(flatten_ranges) {
+  uintptr_t l[] = {0, 3, 8,  9,  15, 15, 13};
+  uintptr_t r[] = {5, 7, 12, 11, 15, 18, 14};
+  pair_t res[LENGTH(l)];
+  size_t n = flatten_ranges(l, r, res, LENGTH(l));
+  COUNTUP(i, n) {
+    printf("[%d, %d]\n", (int)res[i].first, (int)res[i].second);
+  }
+  return 0;
+}
+
+pair_t seg_pair(seg_t seg) {
+  return seg.s ?
+    (pair_t) {
+      .first = (uintptr_t)seg.s,
+      .second = (uintptr_t)(seg.s + seg.n)
+    } :
+  (pair_t) {0, 0};
+}
+
+seg_t pair_seg(pair_t p) {
+  return p.first && p.second ?
+    (seg_t) {
+      .s = (char *)p.first,
+      .n = (char *)p.second - (char *)p.first
+    } :
+  (seg_t) {NULL, 0};
+}
+
+/** Return the string after the last occurrence of a character. */
+const char *suffix(const char *str, char c) {
+  char *p = strrchr(str, c);
+  return p ? p + 1 : str;
+}
+
+TEST(suffix) {
+  const char *str = "start:middle:end";
+  printf("%s\n", suffix(str, ':'));
+  return 0;
+}
+
+/** Count characters in a string. */
+int count_char(const char *str, char c) {
+  const char *p = str;
+  int count = 0;
+  while(*p) {
+    count += *p++ == c;
+  }
+  return count;
+}
+
+TEST(count_char) {
+  return count_char("banana", 'a') == 3 ? 0 : -1;
 }

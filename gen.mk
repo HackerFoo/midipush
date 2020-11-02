@@ -3,6 +3,7 @@
 -include $(OBJS:.o=.d)
 
 SHELL := bash
+COMMA := ,
 
 # collects NAME(...) macros into a sorted list of NAME__ITEM(...) in .gen/name_list.h
 # NAME can optionally be followed by more uppercase letters: NAME_MORE_WORDS(...)
@@ -11,17 +12,31 @@ SHELL := bash
 .gen/%_list.h.new: NAME=$(shell echo $(notdir $*) | tr a-z A-Z)
 .gen/%_list.h.new: $(SRC)
 	@mkdir -p $(dir $@)
-	sed -E -n -e 's/^ *'"$(NAME)"'(_[A-Z][A-Z_]*)?\((.*)\).*/'"$(NAME)\1__ITEM"'( \2 )/p' $(SRC) | sed -e 's/,/ , /g' | LC_ALL=C sort -u -k 2,2 > $@
+	grep -n '$(NAME)' $(SRC) | \
+	  sed -e 'h;s/\(.*\):.*/\1/;y/\//_/;G;s/\n.*:/:/' | \
+	  sed -E -n -e 's/^(.*)\.c:(.*): *'"$(NAME)"'(_[A-Z][A-Z_]*)?\((.*)\).*/'"$(NAME)\3__ITEM"'(\1, \2, \4)/p' | \
+	  LC_ALL=C sort -t ',' -u -k 3,3 > $@
 
 # store the current git commit
-.gen/git_log.h.new: LOG = $(shell git log -1 --oneline)
 .gen/git_log.h.new: $(SRC)
 	@mkdir -p $(dir $@)
+	echo -n '#define GIT_LOG "' > $@
+	git log -1 --oneline | tr -d '\n' | sed 's/"/\\"/g' >> $@
 	@if git diff-index --quiet HEAD --; then \
-		echo "#define GIT_LOG \"$(LOG)\"" > $@; \
+		echo '"' >> $@; \
 	else \
-		echo "#define GIT_LOG \"$(LOG) [DIRTY]\"" > $@; \
+		echo ' [DIRTY]"' >> $@; \
 	fi
+
+.PHONY: .gen/file_ids.h.new
+.gen/file_ids.h.new: SORTED_SRC := $(sort $(SRC))
+.gen/file_ids.h.new: QUOTED_SRC := $(foreach src, $(SORTED_SRC), \"$(src)\")
+.gen/file_ids.h.new:
+	@mkdir -p $(dir $@)
+	rm -f $@
+	for i in $(join $(addsuffix $(COMMA), $(subst /,_, $(basename $(SORTED_SRC)))), $(QUOTED_SRC)); do \
+		echo "FILE_ID($$i)" >> $@; \
+	done
 
 .gen/%-local.h.new: %.c startle/bin/makeheaders
 	@mkdir -p $(dir $@)
