@@ -26,13 +26,14 @@
 #include "startle/error.h"
 #include "startle/log.h"
 #include "startle/support.h"
+#include "startle/static_alloc.h"
 
 /** @file
  *  @brief Structured in-memory logging
  */
 
 
-#define FORMAT__ITEM(name, c) \
+#define FORMAT__ITEM(file, line, name, c)             \
   void format_##name(intptr_t) __attribute__((weak)); \
   void format_##name(intptr_t x) { printf("?0x%lx", x); }
 #include "format_list.h"
@@ -43,10 +44,11 @@
 #define END_CONTEXT   '\xff'
 #define MASK (~(REVERSE | START_CONTEXT))
 
-#define LOG_SIZE (1 << 12)
-static intptr_t log[LOG_SIZE];
-static unsigned int log_head = 0;
-static unsigned int log_tail = 0;
+// must be a power of two size
+STATIC_ALLOC(log_data, intptr_t, 1 << 12);
+
+static unsigned int log_start = 0;
+static unsigned int log_end = 0;
 static unsigned int log_watch = ~0;
 static unsigned int log_watch_to = ~0;
 static intptr_t log_watch_fmt = 0;
@@ -60,15 +62,15 @@ static char *tweak_fmt = NULL;
 static unsigned int tweak_trigger = ~0;
 static intptr_t tweak_value = 0;
 
-static uintptr_t hash_tag_set[63];
+STATIC_ALLOC(hash_tag_set, uintptr_t, 63);
 
 log_context_t *__log_context = NULL;
 
 /** Call this first to initialize the log. */
 void log_init() {
-  log[0] = 0;
-  log_head = 0;
-  log_tail = 0;
+  log_data[0] = 0;
+  log_start = 0;
+  log_end = 0;
   __log_context = NULL;
   log_watch = ~0;
   log_watch_to = ~0;
@@ -80,8 +82,10 @@ void log_init() {
   set_tweak_fmt = false;
   tweak_fmt = NULL;
   msg_head = 0;
-  zero(hash_tag_set);
+  static_zero(hash_tag_set);
 }
+
+#define log(x) (log_data[(x) & (log_data_size - 1)])
 
 /** Set a tag to break on.
  * Break when this tag is reached.
@@ -107,7 +111,7 @@ void set_log_watch_range(const tag_t tag_from, const char *tag_to) {
 
 /** Re-initialize the log without clearing it. */
 void log_soft_init() {
-  if(log_head != log_tail) {
+  if(log_start != log_end) {
     log_add((intptr_t)"\xff\xff"); // reset indentation
   }
   __log_context = NULL;
@@ -115,7 +119,7 @@ void log_soft_init() {
 
 static
 uint8_t log_entry_len(unsigned int idx) {
-  const char *fmt = (const char *)log[idx];
+  const char *fmt = (const char *)log(idx);
   if(!fmt) return 0;
   char len = fmt[0];
   if(len == END_CONTEXT) return 0;
@@ -124,8 +128,7 @@ uint8_t log_entry_len(unsigned int idx) {
 
 static
 unsigned int log_next(unsigned int i) {
-  uint8_t len = log_entry_len(i);
-  return (i + len + 1) % LOG_SIZE;
+  return i + log_entry_len(i) + 1;
 }
 
 // not the most efficient
@@ -138,7 +141,7 @@ char *strchrnul(const char *s, int c) {
 static
 unsigned int log_printf(unsigned int idx, unsigned int *depth, bool event) {
   unsigned int msg_id = idx;
-  const char *fmt = (const char *)log[idx++];
+  const char *fmt = (const char *)log(idx++);
   tag_t tag;
   //printf("%d %d %x %s\n", idx, *depth, fmt[0], fmt + 1);
   uint8_t len = fmt[0] & MASK;
@@ -154,7 +157,7 @@ unsigned int log_printf(unsigned int idx, unsigned int *depth, bool event) {
     if(n[0] != '%') {
       p = strchrnul(n, ' ');
       uintptr_t key = nonzero_hash(n+1, p-n-1);
-      if(n[0] == '@' || set_member(key, hash_tag_set, LENGTH(hash_tag_set))) {
+      if(n[0] == '@' || set_member(key, hash_tag_set, hash_tag_set_size)) {
         printf(NOTE("%.*s"), (int)(p-n), n);
       } else {
         printf("%.*s", (int)(p-n), n);
@@ -164,8 +167,7 @@ unsigned int log_printf(unsigned int idx, unsigned int *depth, bool event) {
 #define CASE_PRINT(c, print)                    \
         case c:                                 \
           if(len) {                             \
-            idx = idx % LOG_SIZE;               \
-            x = log[idx++];                     \
+            x = log(idx++);                     \
             print;                              \
             len--;                              \
           } else {                              \
@@ -174,12 +176,12 @@ unsigned int log_printf(unsigned int idx, unsigned int *depth, bool event) {
           break;
 #define CASE(c, cast, fmt)                      \
         CASE_PRINT(c, printf(fmt, cast(x)))
-#define FORMAT__ITEM(name, c) CASE_PRINT(c, format_##name(x))
+#define FORMAT__ITEM(file, line, name, c) CASE_PRINT(c, format_##name(x))
 #include "format_list.h"
 #undef FORMAT__ITEM
-        CASE('d', (int), "%d");
-        CASE('u', (unsigned int), "%u");
-        CASE('x', (int), "%x");
+        CASE('d', (intptr_t), "%" PRIdPTR);
+        CASE('u', (uintptr_t), "%" PRIuPTR);
+        CASE('x', (uintptr_t), "%" PRIxPTR);
         CASE('s', (const char *), "%s");
         CASE('p', (void *), "%p");
 #undef CASE
@@ -187,10 +189,8 @@ unsigned int log_printf(unsigned int idx, unsigned int *depth, bool event) {
       case '.':
         if(n[2] == '*' && n[3] == 's') {
           if(len > 1) {
-            idx = idx % LOG_SIZE;
-            int size = log[idx++];
-            idx = idx % LOG_SIZE;
-            printf("%.*s", size, (const char *)log[idx++]);
+            int size = log(idx++);
+            printf("%.*s", size, (const char *)log(idx++));
             len -= 2;
           } else {
             printf("X");
@@ -209,7 +209,6 @@ unsigned int log_printf(unsigned int idx, unsigned int *depth, bool event) {
     }
     n = strpbrk(p, "%#@");
   }
-  idx = idx % LOG_SIZE;
   if(event) {
     write_tag(tag, msg_id);
     printf("%s " FADE(FORMAT_TAG) "\n", p, tag);
@@ -220,16 +219,14 @@ unsigned int log_printf(unsigned int idx, unsigned int *depth, bool event) {
 }
 
 void log_add(intptr_t x) {
-  log[log_head] = x;
-  log_head = (log_head + 1) % LOG_SIZE;
-  if(log_head == log_tail) {
-    unsigned int len = log_entry_len(log_tail);
-    log_tail = (log_tail + 1 + len) % LOG_SIZE;
+  log(log_end++) = x;
+  if(log_end - log_start >= log_data_size) {
+    log_start += log_entry_len(log_start) + 1;
   }
 }
 
 void log_add_first(intptr_t x) {
-  msg_head = log_head;
+  msg_head = log_end;
   log_add(x);
 }
 
@@ -238,10 +235,10 @@ bool log_add_last(intptr_t x) {
   if unlikely(msg_head == log_watch ||
               (watching &&
                (!set_log_watch_fmt ||
-                log[msg_head] == log_watch_fmt))) {
+                log(msg_head) == log_watch_fmt))) {
     watching = true;
     if(set_log_watch_fmt) {
-      log_watch_fmt = log[msg_head];
+      log_watch_fmt = log(msg_head);
     } else if(msg_head == log_watch_to) {
       watching = false;
     }
@@ -251,29 +248,29 @@ bool log_add_last(intptr_t x) {
 }
 
 bool log_add_only(intptr_t x) {
-  msg_head = log_head;
+  msg_head = log_end;
   return log_add_last(x);
 }
 
 unsigned int log_depth() {
   unsigned int
-    i = log_tail,
+    i = log_start,
     depth = 0;
-  while(i != log_head) {
-    const char *fmt = (const char *)log[i];
+  while(i != log_end) {
+    const char *fmt = (const char *)log(i);
     if(*fmt == END_CONTEXT) {
       if(fmt[1] == END_CONTEXT) { // log break
         depth = 0;
       } else if(depth) {
         depth--;
       }
-      i = (i + 1) % LOG_SIZE;
+      i++;
     } else {
       if(*fmt & START_CONTEXT) {
         depth++;
       }
       uint8_t len = *fmt & MASK;
-      i = (i + len + 1) % LOG_SIZE;
+      i += len + 1;
     }
   }
   return depth;
@@ -300,8 +297,8 @@ unsigned int count_reversed(unsigned int start) {
   unsigned int
     i = start,
     cnt = 0;
-  while(i != log_head) {
-    const char *fmt = (const char *)log[i];
+  while(i != log_end) {
+    const char *fmt = (const char *)log(i);
     if(!(*fmt & REVERSE)) break;
     i = log_next(i);
     cnt++;
@@ -311,14 +308,14 @@ unsigned int count_reversed(unsigned int start) {
 
 unsigned int log_find_context(unsigned int *ca, unsigned int size) {
   unsigned int
-    i = log_tail,
+    i = log_start,
     depth = 0,
     current_depth = log_depth(),
     low = current_depth > size ? current_depth - size : 0,
     high = low + size - 1;
   memset(ca, 0, sizeof(ca[0]) * size);
-  while(i != log_head) {
-    const char *fmt = (const char *)log[i];
+  while(i != log_end) {
+    const char *fmt = (const char *)log(i);
     if(*fmt == END_CONTEXT) {
       if(fmt[1] == END_CONTEXT) { // log break
         depth = 0;
@@ -374,7 +371,7 @@ void print_last_log_msg() {
 
 static
 bool end_context(unsigned int idx, unsigned int *depth) {
-  const char *fmt = (const char *)log[idx];
+  const char *fmt = (const char *)log(idx);
   // TODO match the ends so that dropping entries doesn't break indentation
   if(fmt[0] != END_CONTEXT) return false;
   if(fmt[1] == END_CONTEXT) {
@@ -388,12 +385,12 @@ bool end_context(unsigned int idx, unsigned int *depth) {
 
 static
 unsigned int print_contexts(unsigned int idx, unsigned int *depth) {
-  if(idx == log_head) return idx;
-  const char *fmt = (const char *)log[idx];
+  if(idx == log_end) return idx;
+  const char *fmt = (const char *)log(idx);
   if(fmt[0] == END_CONTEXT ||
      (fmt[0] & REVERSE) == 0) return idx;
   uint8_t len = (fmt[0] & MASK) + 1;
-  unsigned int ret = print_contexts((idx + len) % LOG_SIZE, depth);
+  unsigned int ret = print_contexts(idx + len, depth);
   log_printf(idx, depth, false);
   return ret;
 }
@@ -403,12 +400,12 @@ void log_print_all() {
   log_scan_tags();
   unsigned int
     depth = 0,
-    i = log_tail;
-  while(i != log_head) {
+    i = log_start;
+  while(i != log_end) {
     i = print_contexts(i, &depth);
-    if(i == log_head) break;
+    if(i == log_end) break;
     if(end_context(i, &depth)) {
-      i = (i + 1) % LOG_SIZE;
+      i++;
     } else {
       i = log_printf(i, &depth, true);
     }
@@ -416,23 +413,23 @@ void log_print_all() {
 }
 
 void log_scan_tags() {
-  zero(hash_tag_set);
-  unsigned int i = log_tail;
-  while(i != log_head) {
-    const char *fmt = (const char *)log[i];
+  static_zero(hash_tag_set);
+  unsigned int i = log_start;
+  while(i != log_end) {
+    const char *fmt = (const char *)log(i);
     if(*fmt == END_CONTEXT) {
-      i = (i + 1) % LOG_SIZE;
+      i++;
       continue;
     }
     uint8_t len = *fmt & MASK;
-    i = (i + len + 1) % LOG_SIZE;
+    i += len + 1;
     const char *p = fmt;
     while((p = strchr(p, '@'))) {
       p++;
       const char *e = strchrnul(p, ' ');
       if(p == e) continue;
       uintptr_t key = nonzero_hash(p, e-p);
-      set_insert(key, hash_tag_set, LENGTH(hash_tag_set));
+      set_insert(key, hash_tag_set, hash_tag_set_size);
       p = e;
     }
   }
@@ -622,8 +619,8 @@ TEST(log_context) {
 /** [log_context] */
 
 #if INTERFACE
-typedef char tag_t[4];
-#define FORMAT_TAG "%.4s"
+typedef char tag_t[5];
+#define FORMAT_TAG "%.5s"
 #endif
 
 char to_tag_char(int x) {
@@ -685,9 +682,11 @@ TEST(spread_gather_bits) {
 }
 
 // modular multiplicative inverses
-const unsigned int tag_factor = 510199;
-const unsigned int tag_factor_inverse = 96455;
-const unsigned int tag_mask = 0x7ffff;
+// 3 + (5 << 5) + (7 << 10) + (11 << 15) + (13 << 20)
+const unsigned int tag_factor = 13999267;
+const unsigned int tag_factor_inverse = 10221323;
+#define TAG_BITS (sizeof(tag_t) * 5 - 1)
+const unsigned int tag_mask = (1 << TAG_BITS) - 1;
 
 /** Write log tag for the given value.
  * @snippet log.c tag
@@ -719,11 +718,11 @@ int read_tag(const tag_t tag) {
 
 TEST(tag) {
   /** [tag] */
-  tag_t tag = "good";
+  tag_t tag = "great";
   int x = read_tag(tag);
   write_tag(tag, x);
   printf("tag: %d = " FORMAT_TAG "\n", x, tag);
-  return strncmp("good", tag, sizeof(tag)) == 0 ? 0 : -1;
+  return strncmp("great", tag, sizeof(tag)) == 0 ? 0 : -1;
   /** [tag] */
 }
 
@@ -759,7 +758,7 @@ void get_tag(tag_t tag) {
 bool log_do_tweak(intptr_t *x, char *fmt) {
   log_add_context();
   if unlikely(tweak_enabled &&
-              (log_head == tweak_trigger ||
+              (log_end == tweak_trigger ||
                (set_tweak_fmt && tweak_fmt == fmt))) {
     *x = tweak_value;
     if(set_tweak_fmt && !tweak_fmt) tweak_fmt = fmt;

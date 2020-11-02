@@ -36,14 +36,14 @@ typedef struct test_entry {
   int (*run)();
 } test_entry_t;
 
-#define TEST__ITEM(name) extern int test_##name();
+#define TEST__ITEM(file, line, name) extern int test_##name();
 #include "test_list.h"
 #undef TEST__ITEM
 
-#define TEST__ITEM(_name)   \
-  {                         \
-    .name = #_name,         \
-    .run = &test_##_name    \
+#define TEST__ITEM(_file, _line, _name)         \
+  {                             \
+    .name = #_name,             \
+    .run = &test_##_name        \
   },
 
 static test_entry_t tests[] = {
@@ -106,9 +106,9 @@ TEST(loops) {
 }
 
 TEST(formask) {
-  unsigned int mask = 0x11af;
+  unsigned int mask = 0x11ae;
   unsigned int prev_mask = (mask << 1) + 1;
-  FORMASK(i, j, 0x11af) {
+  FORMASK(i, j, mask) {
     printf("%d, %d\n", (int)i, (int)j);
     if((prev_mask - (__mask << (__z + 1))) != 1) return -1;
     prev_mask = __mask;
@@ -159,11 +159,11 @@ TEST(oneof) {
 static int shadow_x = 1;
 TEST(shadow) {
   if(shadow_x != 1) return -1;
-  SHADOW(shadow_x, 2) {
+  SHADOW(shadow_x) {
+    shadow_x = 2;
     if(shadow_x != 2) return -2;
-    SHADOW(shadow_x, 3) {
+    SHADOW(shadow_x, 3)
       if(shadow_x != 3) return -3;
-    }
     if(shadow_x != 2) return -4;
   }
   if(shadow_x != 1) return -5;
@@ -179,5 +179,18 @@ TEST(macro_math) {
   if(csub(4, 3) != 1) return -6;
   if(SNAP_UP(1, 3) != 3) return -7;
   if(SNAP_UP(3, 3) != 3) return -8;
+  return 0;
+}
+
+TEST(for_mask) {
+  int count = 0;
+  int prev = -1;
+  FOR_MASK(i, 0xa569) {
+    if(i == prev) return -1;
+    if(i & ~__mask) return -2;
+    prev = i;
+    count++;
+  }
+  if(count != 256) return -3;
   return 0;
 }

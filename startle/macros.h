@@ -97,9 +97,10 @@
 /** Iterate `i` over each index of map `m`. */
 #define FORMAP(i, m) for(size_t i = 1; i <= *map_cnt(m); i++)
 
-#define FORMASK(i, j, mask)                                     \
-  for(uintptr_t i = 0, j = 0, __z = 0, __mask = (mask); __mask; \
-      __mask >>= 1,                                             \
+#define FORMASK(i, j, mask)                                             \
+  for(uintptr_t __mask0 = (mask), __z = ctz(__mask0), __mask = __mask0 >> __z, \
+        i = 0, j = __z; __mask;                                         \
+      __mask >>= 1,                                                     \
         __z = ctz(__mask), j += __z + 1, i++, __mask >>= __z)
 
 // DATA STRUCTURES ________________________________________
@@ -117,7 +118,7 @@
 /** String segment initializer.
  * Example: seg_t s = SEG("Hello");
  */
-#define SEG(x) {(x), sizeof(x) - 1}
+#define SEG(x) ((seg_t) {(x), sizeof(x) - 1})
 
 /** printf that prepends a string segment
  * @param pre print this string first
@@ -173,6 +174,16 @@
     LET(__a, a);                                \
     LET(__b, b);                                \
     __a >= __b ? __a : __b;                     \
+  })
+
+#define clamp(lo, hi, x)                        \
+  ({                                            \
+    LET(__x, x);                                \
+    LET(__lo, lo);                              \
+    LET(__hi, hi);                              \
+    __x > __hi ? __hi :                         \
+      __x < __lo ? __lo :                       \
+      __x;                                      \
   })
 
 /** Non-negative saturating subtraction. */
@@ -277,6 +288,7 @@
 
 /** Zero an array or struct. */
 #define zero(a) memset(&(a), 0, sizeof(a))
+#define static_zero(a) memset(a, 0, static_sizeof(a))
 
 /** Trace an integer variable.
  * `show(name)` will print `name = <value>`
@@ -284,8 +296,8 @@
 #define show(x) printf(#x " = %d\n", (int)(x))
 
 #define FLAG_(x, flag) (((x) & (flag)) != 0)
-#define FLAG_FIELD(s, t) ((s).GET(0, CONCAT(FLAG_, t)).flags)
-#define FLAG_BIT(flag, t) CONCAT(CONCAT(GET(1, CONCAT(FLAG_, t)), _), flag)
+#define FLAG_FIELD(s, t) ((s).GET(0, CONCAT(FLAG_, t)) GET(1, CONCAT(FLAG_, t)) flags)
+#define FLAG_BIT(flag, t) CONCAT(CONCAT(GET(2, CONCAT(FLAG_, t)), _), flag)
 
 /** Return `true` if the flag is set. */
 #define FLAG(s, t, flag) FLAG_(FLAG_FIELD(s, t), FLAG_BIT(flag, t))
@@ -332,6 +344,24 @@
 #define TODO MARK("TODO")
 #define HACK MARK("HACK")
 
+#if !defined(EMSCRIPTEN)
+#define UNDERLINE_START "\x1b[4m"
+#define UNDERLINE_END "\x1b[0m"
+#else
+#define UNDERLINE_START "[[u;;]"
+#define UNDERLINE_END "]"
+#endif
+#define UNDERLINE(x) UNDERLINE_START x UNDERLINE_END
+
+#define IRC_COLOR_red "04"
+#define IRC_COLOR_blue "02"
+#define IRC_COLOR_gray "14"
+#define IRC_COLOR(c, str) "\x03" CONCAT(IRC_COLOR_, c) str "\x03" "99"
+#define IRC_UNDERLINE_CODE "\x1f"
+#define IRC_UNDERLINE(x) IRC_UNDERLINE_CODE x IRC_UNDERLINE_CODE
+#define IRC_MARK(x) IRC_COLOR(red, x)
+#define IRC_NOTE(x) IRC_COLOR(blue, x)
+
 #define DISABLE(...)                            \
   do {                                          \
     LOG(MARK("DISABLED") " %s", __func__);      \
@@ -359,17 +389,29 @@
 #define EACH_3(f, x0, x1) f(x0); f(x1)
 #define EACH_4(f, x0, x1, x2) f(x0); f(x1); f(x2)
 #define EACH_5(f, x0, x1, x2) f(x0); f(x1); f(x2); f(x3)
-#define EACH(...) \
-  do {                                          \
-    DISPATCH(EACH, __VA_ARGS__);                \
-  } while(0)
+#define EACH(...) DISPATCH(EACH, __VA_ARGS__)
+
+#define ANY_2(f, x0) f(x0)
+#define ANY_3(f, x0, x1) (ANY_2(f, x0) || f(x1))
+#define ANY_4(f, x0, x1, x2) (ANY_3(f, x0, x1) || f(x2))
+#define ANY_5(f, x0, x1, x2, x3) (ANY_4(f, x0, x1, x2) || f(x3))
+#define ANY_6(f, x0, x1, x2, x3, x4) (ANY_5(f, x0, x1, x2, x3) || f(x4))
+#define ANY(...) DISPATCH(ANY, __VA_ARGS__)
 
 /** Reassign a variable for the duration of the following block. */
-#define SHADOW(var, val)                        \
+#define SHADOW_2(var, val)                      \
   for(const __typeof__(var) __tmp = (var),      \
         *__tmpp = (((var) = (val)), &__tmp);    \
       __tmpp;                                   \
       ((var) = __tmp), __tmpp = NULL)
+
+#define SHADOW_1(var)                           \
+  for(const __typeof__(var) __tmp = (var),      \
+        *__tmpp = &__tmp;                       \
+      __tmpp;                                   \
+      ((var) = __tmp), __tmpp = NULL)
+
+#define SHADOW(...) DISPATCH(SHADOW, __VA_ARGS__)
 
 #define maybe_get(s, f, d)                      \
   ({                                            \
@@ -378,3 +420,33 @@
   })
 
 #endif
+
+#define FOR_MASK(i, mask)                       \
+  for(__typeof__(mask)                          \
+        __mask = (mask),                        \
+        __inc = ~__mask + 1,                    \
+        i = 0, __done = __mask + 1;             \
+      __done != __mask;                         \
+      __done = i, i = (i + __inc) & __mask)
+
+#define STR_IF(cond, str) ((cond) ? (str) : "")
+
+#define STATIC_ALLOC(name, type, ...)               \
+  extern type *name;                                \
+  extern size_t name##_size;                        \
+  extern size_t name##_size_init
+#define STATIC_ALLOC_ALIGNED(...) STATIC_ALLOC(__VA_ARGS__)
+#define STATIC_ALLOC_DEPENDENT(name, type, ...)     \
+  extern type *name;                                \
+  extern size_t name##_size
+#define STATIC_FOREACH(i, a) COUNTUP(i, a##_size)
+
+#define PAIR(x, y) ((pair_t) {(uintptr_t)(x), (uintptr_t)(y)})
+
+#define MAP_GET(map, key, val)                                  \
+  ({                                                            \
+    pair_t *p = map_find(switch_rev_map, (uintptr_t)(key));     \
+    p ? (__typeof__(val))p->second : val;                       \
+  })
+
+#define sizeof_bits(x) (sizeof(x) * 8)
