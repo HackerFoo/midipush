@@ -22,6 +22,9 @@
  *  @brief Types used throughout Startle
  */
 
+#include <stdint.h>
+#include <stdbool.h>
+
 /** A pair of things */
 typedef struct pair_t {
   uintptr_t first, second;

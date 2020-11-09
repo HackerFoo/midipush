@@ -22,7 +22,6 @@
 #include <sys/stat.h>
 #include <fcntl.h>
 #include <unistd.h>
-#include <stdbool.h>
 
 #if INTERFACE
 #include <stdio.h>
@@ -1373,7 +1372,7 @@ TEST(seg_range) {
     c = seg_range(a, b);                                                \
     printf("\"%.*s\" + \"%.*s\" = \"%.*s\"\n", (int)a.n, a.s, (int)b.n, b.s, (int)c.n, c.s)
 
-    seg_t a, b, c, d, e = { .s = NULL };
+    seg_t a, b, c, d, e = { .s = "" };
     SEG_RANGE_TEST(a, random, just);
     SEG_RANGE_TEST(b, some, words);
     SEG_RANGE_TEST(c, a, b);

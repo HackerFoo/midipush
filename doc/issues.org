@@ -1,0 +1,9 @@
+* features to add
+** saving and loading
+*** internal format
+*** MIDI
+** drop tombstones in map
+** display instrument names
+** volume control
+* bugs
+** stop all instruments on new

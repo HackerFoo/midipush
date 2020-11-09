@@ -17,14 +17,12 @@
 
 #include <stdlib.h>
 #include <string.h>
-#include "rt_types.h"
 
+#include "startle/types.h"
+#include "startle/macros.h"
 #include "startle/test.h"
 #include "startle/support.h"
 #include "startle/static_alloc.h"
-
-#include "cells.h"
-#include "rt.h"
 
 #if INTERFACE
 #define static_sizeof(name) (sizeof(*name) * name##_size)
