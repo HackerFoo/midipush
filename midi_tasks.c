@@ -205,7 +205,7 @@ DTASK(record, map_t) {
   int channel = *DREF_PASS(channel);
   map_t record = *DREF(record);
   if(*DREF(new_button)) {
-    if(!*DREF_PASS(deleting)) {
+    if(!*DREF(deleting)) {
       map_clear(record);
     } else {
       unsigned char noteon = 0x90 | channel;
@@ -234,21 +234,28 @@ DTASK(record, map_t) {
       p = map_next(&it, p);
     }
   } else if(*DREF(recording)) {
-    const seg_t *msg_in = DREF(push_midi_msg_in);
-    unsigned char control = msg_in->s[0] & 0xf0;
-    if(ONEOF(control, 0x80, 0x90)) {
-      int pad = msg_in->s[1] - 36;
-      if(INRANGE(pad, 0, 63)) {
-        int note = pad_to_note(pad);
-        if(control == 0x90) {
-          msg_data_t msg = {{
-              msg_in->s[0] | channel,
-              note,
-              msg_in->s[2]
-            }};
-          map_insert(record, PAIR(beat, msg.data));
+    if(state->events & DELETING) {
+      // delete disabled, so collect garbage
+      int n = map_filter(record, nonzero_value);
+      printf("%d notes discarded\n", n);
+    }
+    if(state->events & PUSH_MIDI_MSG_IN) {
+      const seg_t *msg_in = DREF(push_midi_msg_in);
+      unsigned char control = msg_in->s[0] & 0xf0;
+      if(ONEOF(control, 0x80, 0x90)) {
+        int pad = msg_in->s[1] - 36;
+        if(INRANGE(pad, 0, 63)) {
+          int note = pad_to_note(pad);
+          if(control == 0x90) {
+            msg_data_t msg = {{
+                msg_in->s[0] | channel,
+                note,
+                msg_in->s[2]
+              }};
+            map_insert(record, PAIR(beat, msg.data));
+          }
+          return true;
         }
-        return true;
       }
     }
   }
@@ -262,7 +269,7 @@ DTASK(passthrough, bool) {
   if(ONEOF(control, 0x80, 0x90)) {
     int pad = msg_in->s[1] - 36;
     if(INRANGE(pad, 0, 63)) {
-      synth_note(channel, pad_to_note(pad) + 43, control == 0x90, msg_in->s[2]);
+      synth_note(channel, pad_to_note(pad) + DREF_PASS(transpose)->offset[channel], control == 0x90, msg_in->s[2]);
       return true;
     }
   }
@@ -336,7 +343,7 @@ DTASK(playback, uint64_t) {
       if((msg.byte[0] & 0xf0) == 0x90) {
         int c = msg.byte[0] & 0x0f;
         if(!(disable & 1ull << c)) {
-          synth_note(c, msg.byte[1] + 43, true, msg.byte[2]);
+          synth_note(c, msg.byte[1] + DREF_PASS(transpose)->offset[c], true, msg.byte[2]);
         }
       }
       p = map_next(&it, p);
@@ -350,7 +357,7 @@ DTASK(playback, uint64_t) {
       COUNTUP(i, 64) {
         uint64_t bit = 1ull << i;
         if(released & bit) {
-          synth_note(c, i + 43, false, 0);
+          synth_note(c, i + DREF_PASS(transpose)->offset[c], false, 0);
         }
       }
     }
@@ -358,24 +365,22 @@ DTASK(playback, uint64_t) {
 
   uint64_t cur = *DREF(pad);
   bool first = true;
-  uint64_t all_notes = 0;
-  COUNTUP(c, 16) {
-    if(!(disable & 1ull << c)) {
-      all_notes |= notes[c];
-    }
-  }
+
   COUNTUP(i, 64) {
     uint64_t bit = 1ull << i;
     int note = pad_to_note(i);
     uint64_t note_bit = 1ull << note;
     int color = 0;
-    if(all_notes & note_bit) {
+    if(notes[channel] & note_bit) {
       cur |= bit;
     }
     if((~prev & cur) & bit) { // set
       if(*DREF(pad) & bit) {
         if(first) { // show first pressed note
-          printf_text(0, 0, "note: %.2s, octave: %1d, number: %2d", get_note_name(note), get_note_octave(note), note);
+          printf_text(0, 0, "note: %.2s, octave: %2d, number: %2d",
+                      get_note_name(note),
+                      get_note_octave(note) + (DREF_PASS(transpose)->offset[channel] - 7) / 12, // TODO simplify this
+                      note);
           first = false;
         }
         color = PAD_GREEN;
@@ -562,6 +567,31 @@ DTASK(disable_channel, unsigned int) {
       *DREF(disable_channel) ^= 1ull << channel;
       return true;
     }
+  }
+  return false;
+}
+
+DTASK_ENABLE(transpose) {
+  send_msg(0xb0, 44, 1);
+  send_msg(0xb0, 45, 1);
+  COUNTUP(c, 16) {
+    DREF(transpose)->offset[c] = 43;
+  }
+  printf_text(51, 2, "octave: %1d", (int)(DREF(transpose)->offset[*DREF(channel)] - 7) / 12);
+}
+
+DTASK(transpose, struct { uint8_t offset[16]; }) {
+  const seg_t *msg_in = DREF(push_midi_msg_in);
+  unsigned char control = msg_in->s[0] & 0xf0;
+  if(control == 0xb0 &&
+     ONEOF(msg_in->s[1], 44, 45) &&
+     msg_in->s[2]) {
+    int channel = *DREF_PASS(channel);
+    uint8_t *off = &DREF(transpose)->offset[channel];
+    *off = clamp(7, 67, *off + (msg_in->s[1] == 44 ? -12 : 12));
+    printf_text(51, 2, "octave: %1d", (int)((*off - 7) / 12));
+    all_notes_off(channel);
+    return true;
   }
   return false;
 }

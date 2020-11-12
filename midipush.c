@@ -40,7 +40,7 @@
 #include "midi_tasks.h"
 #include "midipush.h"
 
-const int initial = PRINT_MIDI_MSG | LIGHT_BAR | PLAYBACK | SHOW_PROGRAM | PASSTHROUGH | SHOW_DISABLE_CHANNEL;
+const int initial = PRINT_MIDI_MSG | LIGHT_BAR | PLAYBACK | SHOW_PROGRAM | PASSTHROUGH | SHOW_DISABLE_CHANNEL | TRANSPOSE;
 
 static snd_rawmidi_t *rawmidi_in = NULL, *rawmidi_out = NULL, *synth_out = NULL;
 
