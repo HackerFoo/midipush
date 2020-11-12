@@ -165,9 +165,6 @@ typedef union {
 
 DTASK(note_record, struct { uint64_t notes[BEATS][16]; }) {
   int channel = *DREF_PASS(channel);
-  if(*DREF_PASS(disable_channel) & (1ull << channel)) {
-    return false;
-  }
   if(*DREF(new_button)) {
     if(!*DREF_PASS(deleting)) {
       memset(DREF(note_record), 0, sizeof(note_record_t));
@@ -208,38 +205,34 @@ DTASK(record, map_t) {
     if(!*DREF(deleting)) {
       map_clear(record);
     } else {
-      unsigned char noteon = 0x90 | channel;
       FORMAP(i, record) {
         pair_t *p = &record[i];
         msg_data_t msg = { .data = p->second };
-        if((msg.byte[0]) == noteon) {
+        if((msg.byte[0] & 0xf) == channel) {
           p->second = 0;
         }
       }
     }
     return true;
   }
-  if(*DREF_PASS(disable_channel) & (1ull << channel)) {
-    return false;
-  }
   if(*DREF(deleting)) {
     map_iterator it = map_iterator_begin(record, beat);
     pair_t *p = map_find_iter(&it);
-    unsigned char noteon = 0x90 | channel;
     while(p) {
       msg_data_t msg = { .data = p->second };
-      if((msg.byte[0]) == noteon) {
+      if((msg.byte[0] & 0xf) == channel) {
         p->second = 0;
       }
       p = map_next(&it, p);
     }
-  } else if(*DREF(recording)) {
+  } else {
     if(state->events & DELETING) {
       // delete disabled, so collect garbage
       int n = map_filter(record, nonzero_value);
       printf("%d notes discarded\n", n);
     }
-    if(state->events & PUSH_MIDI_MSG_IN) {
+    if(*DREF(recording) &&
+       state->events & PUSH_MIDI_MSG_IN) {
       const seg_t *msg_in = DREF(push_midi_msg_in);
       unsigned char control = msg_in->s[0] & 0xf0;
       if(ONEOF(control, 0x80, 0x90)) {
@@ -297,7 +290,7 @@ DTASK(set_page, struct { int val, set, keep; }) {
         p->val = (c - 102) * 8 | (p->val & 0x07);
         p->set |= 0x38;
       } else if(top) {
-        p->val = p->val & 0x38 | (c - 20);
+        p->val = (p->val & 0x38) | (c - 20);
         p->set |= 0x07;
       }
     } else if (p->set) {

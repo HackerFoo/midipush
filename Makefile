@@ -81,7 +81,7 @@ DTASK_TARGETS := midi_tasks
 DTASK_GENERATED_HEADERS := $(patsubst %, .gen/%.h, $(DTASK_TARGETS))
 INCLUDE += -I $(DTASK_SRC)
 
-LIBS += -lasound
+LIBS += -lasound -lz
 
 .PHONY: all
 all: midipush

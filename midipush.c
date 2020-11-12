@@ -22,6 +22,7 @@
 #include <sys/time.h>
 #include <poll.h>
 #include <stdarg.h>
+#include <zlib.h> // crc32
 
 #include "dtask.h"
 #include "types.h"
@@ -39,6 +40,8 @@
 
 #include "midi_tasks.h"
 #include "midipush.h"
+
+#define STATE_FILE "midipush.state"
 
 const int initial = PRINT_MIDI_MSG | LIGHT_BAR | PLAYBACK | SHOW_PROGRAM | PASSTHROUGH | SHOW_DISABLE_CHANNEL | TRANSPOSE;
 
@@ -289,6 +292,54 @@ int get_pfds(snd_rawmidi_t *m, struct pollfd *pfds, int pfds_n) {
   return n;
 }
 
+static
+bool load_state(const char *name, midi_tasks_state_t *state) {
+  int fd = open(name, O_RDONLY);
+  if(fd >= 0) {
+    char *task_specific = (char *)state + sizeof(dtask_state_t);
+    size_t task_specific_size = sizeof(*state) - sizeof(dtask_state_t);
+    read(fd, task_specific, task_specific_size);
+    read(fd, record, static_sizeof(record)); // ***
+    uLong crc = crc32(0L, Z_NULL, 0);
+    crc = crc32(crc, task_specific, task_specific_size);
+    crc = crc32(crc, record, static_sizeof(record));
+    state->record = record;
+    uLong crc_read;
+    read(fd, &crc_read, sizeof(crc_read));
+    close(fd);
+    if(crc == crc_read) {
+      printf("state loaded from: %s\n", name);
+      return true;
+    } else {
+      printf("bad crc: %s\n", name);
+      memset(task_specific, 0, task_specific_size);
+      memset(record, 0, static_sizeof(record));
+    }
+  } else {
+    printf("failed to load: %s\n", name);
+  }
+  return false;
+}
+
+static
+void save_state(const char *name, midi_tasks_state_t *state) {
+  int fd = open(name, O_WRONLY | O_CREAT, 0644);
+  if(fd >= 0) {
+    char *task_specific = (char *)state + sizeof(dtask_state_t);
+    size_t task_specific_size = sizeof(*state) - sizeof(dtask_state_t);
+    uLong crc = crc32(0L, Z_NULL, 0);
+    crc = crc32(crc, task_specific, task_specific_size);
+    crc = crc32(crc, record, static_sizeof(record));
+    write(fd, task_specific, task_specific_size);
+    write(fd, record, static_sizeof(record)); // ***
+    write(fd, &crc, sizeof(crc));
+    close(fd);
+    printf("state saved to: %s\n", name);
+  } else {
+    printf("failed to save: %s\n", name);
+  }
+}
+
 STATIC_ALLOC(record, pair_t, 1 << 15);
 int main(int argc, char *argv[]) {
   static_alloc_init();
@@ -331,15 +382,21 @@ int main(int argc, char *argv[]) {
     n = snd_rawmidi_open(NULL, &synth_out, portname, SND_RAWMIDI_SYNC | SND_RAWMIDI_NONBLOCK);
     assert_throw(n >= 0, "Problem opening MIDI port: %s", snd_strerror(n));
 
+    if(!load_state(STATE_FILE, &midi_state)) {
+      midi_state.record = init_map(record, record_size);
+    }
+
     pfds_in_n = get_pfds(rawmidi_in, pfds_in, LENGTH(pfds_in));
     dtask_enable((dtask_state_t *)&midi_state, initial);
     dtask_select((dtask_state_t *)&midi_state);
-    midi_state.record = init_map(record, record_size);
     while(read_midi_msgs(rawmidi_in, midi_input_rb, &midi_state)) {
       poll(pfds_in, pfds_in_n, 10);
       gettimeofday(&midi_state.time_of_day, NULL);
       dtask_run((dtask_state_t *)&midi_state, TIME_OF_DAY);
     }
+
+    dtask_disable((dtask_state_t *)&midi_state, initial);
+    save_state(STATE_FILE, &midi_state);
 
     snd_rawmidi_close(rawmidi_in);
     snd_rawmidi_close(rawmidi_out);
