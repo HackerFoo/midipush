@@ -1,9 +1,12 @@
-* features to add
+* features
 ** saving and loading
-*** internal format
-*** MIDI
-** drop tombstones in map
-** display instrument names
-** volume control
+*** DONE internal format
+*** TODO MIDI
+** DONE drop tombstones in map
+** TODO display instrument names
+** TODO volume control
+** TODO aftertouch
+** TODO volume control
+** TODO arpeggiator
 * bugs
-** stop all instruments on new
+** DONE stop all instruments on new
