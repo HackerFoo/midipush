@@ -1299,3 +1299,34 @@ map_t init_map(pair_t *mem, size_t n) {
   mem[0] = (pair_t) {n - 1, 0};
   return mem;
 }
+
+size_t map_filter(map_t map, bool (*fn)(const pair_t *)) {
+  map_sort_full(map);
+  size_t r = 0;
+  FORMAP(i, map) {
+    const pair_t *p = &map[i];
+    if(fn(p)) {
+      if(r) map[i - r] = *p;
+    } else {
+      r++;
+    }
+  }
+  *map_cnt(map) -= r;
+  return r;
+}
+
+bool nonzero_value(const pair_t *p) {
+  return p->second;
+}
+
+TEST(map_filter) {
+  MAP(map, 32);
+  int elems[] = {2, 5, 8, 3, 1, 0, 4, 7, 6, 9, 10, 15, 13, 11, 12};
+  FOREACH(i, elems) {
+    pair_t p = {elems[i], i & 1};
+    map_insert(map, p);
+  }
+  map_filter(map, nonzero_value);
+  print_map(map);
+  return 0;
+}
