@@ -301,6 +301,10 @@ int main(int argc, char *argv[]) {
     print_last_log_msg();
     return -1;
   } else {
+    if(argc >= 3 && strcmp(argv[1], "-t") == 0) {
+      run_test(string_seg(argv[2]));
+      return 0;
+    }
     int card = find_card("Ableton Push");
     assert_throw(card >= 0, "Ableton Push not found.");
     int synth = find_card("VirMIDI");

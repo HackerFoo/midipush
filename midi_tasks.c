@@ -29,7 +29,7 @@
 #include "midi_tasks.h"
 #endif
 
-#define BEATS_PER_PAGE 16
+#define BEATS_PER_PAGE 24
 #define PAGES 64
 #define BEATS (BEATS_PER_PAGE * PAGES)
 
