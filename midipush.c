@@ -43,7 +43,7 @@
 
 #define STATE_FILE "midipush.state"
 
-const int initial = PRINT_MIDI_MSG | LIGHT_BAR | PLAYBACK | SHOW_PROGRAM | PASSTHROUGH | SHOW_DISABLE_CHANNEL | TRANSPOSE;
+const int initial = PRINT_MIDI_MSG | LIGHT_BAR | PLAYBACK | SHOW_PROGRAM | PASSTHROUGH | SHOW_DISABLE_CHANNEL | TRANSPOSE | SHOW_VOLUME;
 
 static snd_rawmidi_t *rawmidi_in = NULL, *rawmidi_out = NULL, *synth_out = NULL;
 
@@ -162,6 +162,13 @@ void write_midi(seg_t s) {
 }
 
 void write_synth(seg_t s) {
+  /*
+  printf("synth: 0x%x:", (unsigned char)s.s[0]);
+  RANGEUP(i, 1, s.n) {
+    printf(" %d", (unsigned char)s.s[i]);
+  }
+  printf("\n");
+  */
   snd_rawmidi_write(synth_out, s.s, s.n);
 }
 

@@ -241,7 +241,7 @@ DTASK(record, map_t) {
           int note = pad_to_note(pad);
           if(control == 0x90) {
             msg_data_t msg = {{
-                msg_in->s[0] | channel,
+                control | channel,
                 note,
                 msg_in->s[2]
               }};
@@ -249,6 +249,12 @@ DTASK(record, map_t) {
           }
           return true;
         }
+      } else if(ONEOF(control, 0xd0, 0xe0)) {
+        msg_data_t msg;
+        int n = min(sizeof(msg), msg_in->n);
+        memcpy(msg.byte, msg_in->s, n);
+        msg.byte[0] = control | channel;
+        map_insert(record, PAIR(beat, msg.data));
       }
     }
   }
@@ -265,6 +271,12 @@ DTASK(passthrough, bool) {
       synth_note(channel, pad_to_note(pad) + DREF_PASS(transpose)->offset[channel], control == 0x90, msg_in->s[2]);
       return true;
     }
+  } else if(ONEOF(control, 0xd0, 0xe0)) {
+    char msg[8];
+    int n = min(sizeof(msg), msg_in->n);
+    memcpy(msg, msg_in->s, n);
+    msg[0] = control | channel;
+    write_synth((seg_t) { .n = n, .s = msg });
   }
   return false;
 }
@@ -333,11 +345,15 @@ DTASK(playback, uint64_t) {
     pair_t *p = map_find_iter(&it);
     while(p) {
       msg_data_t msg = { .data = p->second };
-      if((msg.byte[0] & 0xf0) == 0x90) {
+      int control = msg.byte[0] & 0xf0;
+      if(control == 0x90) {
         int c = msg.byte[0] & 0x0f;
         if(!(disable & 1ull << c)) {
           synth_note(c, msg.byte[1] + DREF_PASS(transpose)->offset[c], true, msg.byte[2]);
         }
+      } else if(ONEOF(control, 0xd0, 0xe0)) {
+        int n = min(sizeof(msg.byte), fixed_length(control));
+        write_synth((seg_t) { .n = n, .s = msg.byte });
       }
       p = map_next(&it, p);
     }
@@ -491,13 +507,42 @@ DTASK(shuttle, int8_t) {
   return false;
 }
 
-DTASK(program, struct { int arr[16]; }) {
+DTASK(volume, struct { int arr[16]; }) {
   const seg_t *msg_in = DREF(push_midi_msg_in);
   int channel = *DREF_PASS(channel);
   bool change = false;
   unsigned char control = msg_in->s[0] & 0xf0;
   if(control == 0xb0 &&
        msg_in->s[1] == 79) {
+    int val = msg_in->s[2];
+    if(val >= 64) val = val - 128;
+    int *p = &DREF(volume)->arr[channel];
+    *p = clamp(0, 127, *p + val);
+    write_synth((seg_t) {
+      .n = 3,
+      .s = (char [3]) { 0xb0 | channel, 7, *p }
+    });
+    return true;
+  }
+  return false;
+}
+
+DTASK_ENABLE(show_volume) {
+  printf_text(51, 3, "volume: %3d", DREF(volume)->arr[*DREF(channel)]);
+}
+
+DTASK(show_volume, bool) {
+  printf_text(51, 3, "volume: %3d", DREF(volume)->arr[*DREF(channel)]);
+  return true;
+}
+
+DTASK(program, struct { int arr[16]; }) {
+  const seg_t *msg_in = DREF(push_midi_msg_in);
+  int channel = *DREF_PASS(channel);
+  bool change = false;
+  unsigned char control = msg_in->s[0] & 0xf0;
+  if(control == 0xb0 &&
+       msg_in->s[1] == 78) {
     uint8_t val = msg_in->s[2];
     uint8_t *p = &DREF(program)->arr[channel];
     *p = (*p + val) % 128;
@@ -588,3 +633,7 @@ DTASK(transpose, struct { uint8_t offset[16]; }) {
   }
   return false;
 }
+
+// Local Variables:
+// eval: (add-to-list 'imenu-generic-expression '("Task" "^DTASK(\\([a-zA-Z0-9_]+\\),.*$" 1))
+// End:

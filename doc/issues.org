@@ -4,9 +4,11 @@
 *** TODO MIDI
 ** DONE drop tombstones in map
 ** TODO display instrument names
-** TODO volume control
-** TODO aftertouch
-** TODO volume control
+** DONE volume control
+** DONE aftertouch
+** DONE pitch bend
 ** TODO arpeggiator
 * bugs
 ** DONE stop all instruments on new
+* references
+** FluidSynth: https://github.com/FluidSynth/fluidsynth/wiki/FluidFeatures
