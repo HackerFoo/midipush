@@ -26,7 +26,8 @@ ifeq ($(findstring clang, $(CC)),clang)
 	CFLAGS = -Wall -Wextra -pedantic -std=gnu11 \
                  -Wno-gnu-zero-variadic-macro-arguments -Wno-address-of-packed-member \
                  -Wno-unknown-warning-option -Wno-zero-length-array -Wno-array-bounds \
-                 -Werror=implicit-function-declaration -Werror=int-conversion
+                 -Werror=implicit-function-declaration -Werror=int-conversion \
+                 -Wno-unused-parameter -Wno-variadic-macros
 	CXXFLAGS = -xc++ -Wall -Wextra -pedantic -std=c++98
 	OPT_FLAG=-O3
 	LDFLAGS += -rdynamic
@@ -94,8 +95,8 @@ midipush: $(DTASK_GENERATED_HEADERS) $(BUILD_DIR)/midipush
 
 $(DTASK_GENERATED_HEADERS): .gen/%.h : $(TASK_SRC)
 	@mkdir -p .gen
-	PYTHONPATH=$(DTASK_ROOT) python $(DTASK_TOOLS)/generate_task_header.py -I $(DTASK_SRC) --target $* $(TASK_SRC)
-	mv $*.h .gen/
+	PYTHONPATH=$(DTASK_ROOT) python $(DTASK_TOOLS)/generate_task_header.py -I $(DTASK_SRC) --target $* $(TASK_SRC) -o .gen/$*.h.tmp
+	mv .gen/$*.h.tmp .gen/$*.h
 
 include startle/startle.mk
 
