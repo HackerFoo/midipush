@@ -95,7 +95,7 @@ midipush: $(DTASK_GENERATED_HEADERS) $(BUILD_DIR)/midipush
 
 $(DTASK_GENERATED_HEADERS): .gen/%.h : $(TASK_SRC)
 	@mkdir -p .gen
-	PYTHONPATH=$(DTASK_ROOT) python $(DTASK_TOOLS)/generate_task_header.py -I $(DTASK_SRC) --target $* $(TASK_SRC) -o .gen/$*.h.tmp
+	PYTHONPATH=$(DTASK_ROOT) python $(DTASK_TOOLS)/generate_task_header.py -b 64 -I $(DTASK_SRC) --target $* $(TASK_SRC) -o .gen/$*.h.tmp
 	mv .gen/$*.h.tmp .gen/$*.h
 
 include startle/startle.mk

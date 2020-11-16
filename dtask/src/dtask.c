@@ -36,7 +36,7 @@ dtask_id_t dtask_set_find_first(dtask_set_t set, dtask_id_t prev) {
   return DTASK_BIT_WIDTH(dtask_set_t);
 }
 #else
-#define dtask_set_find_first(set, prev) (__builtin_clz(set))
+#define dtask_set_find_first(set, prev) (__builtin_clzll(set))
 #endif
 
 // find the last (highest) id in the set
@@ -56,7 +56,7 @@ dtask_id_t dtask_set_find_last(dtask_set_t set, dtask_id_t prev) {
   return -1;
 }
 #else
-#define dtask_set_find_last(set, prev) (DTASK_MAX_ID - __builtin_ctz(set))
+#define dtask_set_find_last(set, prev) (DTASK_MAX_ID - __builtin_ctzll(set))
 #endif
 
 // call action for each id in set in increasing order

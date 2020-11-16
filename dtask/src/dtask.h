@@ -38,7 +38,7 @@
 typedef uint8_t dtask_id_t;
 
 // sets of dtask ids
-typedef unsigned int dtask_set_t;
+typedef unsigned long long dtask_set_t;
 
 // the maximum id that can fit in dtask_set_t
 #define DTASK_MAX_ID (DTASK_BIT_WIDTH(dtask_set_t) - 1)
@@ -54,7 +54,7 @@ typedef unsigned int dtask_set_t;
 // convert an id to a singleton set (one bit)
 static inline
 dtask_set_t dtask_bit(dtask_id_t id) {
-  return ((dtask_set_t)1 << DTASK_MAX_ID) >> id;
+  return ((dtask_set_t)1ull << DTASK_MAX_ID) >> id;
 }
 
 /*-------------------- state and config --------------------*/
@@ -169,6 +169,9 @@ typedef group_name##_state_t dref_t;
 
 // passive (doesn't trigger) version of DREF that doesn't force dependency to be enabled
 #define DREF_PASS(x) DREF(x)
+
+// no dependency ordering
+#define DREF_UNSAFE(x) DREF(x)
 
 // define the enable function for a dtask
 #define DTASK_ENABLE(name)  \
