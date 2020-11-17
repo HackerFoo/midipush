@@ -38,7 +38,7 @@
 #define PAD_YELLOW 13
 #define PAD_GREEN 21
 
-static_assert(MIDI_TASKS_COUNT <= 32, "too many tasks");
+static_assert(MIDI_TASKS_COUNT <= 64, "too many tasks");
 
 DTASK_GROUP(midi_tasks)
 
@@ -490,13 +490,13 @@ DTASK_ENABLE(playback) {
   }
 }
 
-DTASK(playback, uint64_t) {
-  uint64_t prev = *DREF(playback);
+DTASK(playback, struct { uint64_t played[16]; }) {
+  uint64_t *played = &DREF(playback)->played;
   unsigned int beat = DREF(beat)->now;
   uint64_t *notes = DREF(record)->notes[beat];
-  uint64_t *prev_notes = DREF(record)->notes[DREF(beat)->then];
   int channel = *DREF_PASS(channel);
   unsigned int disable = *DREF_PASS(disable_channel);
+  bool changed = false;
 
   if(*DREF(playing)) {
     map_iterator it = map_iterator_begin(DREF(record)->events, beat);
@@ -508,6 +508,8 @@ DTASK(playback, uint64_t) {
         int c = msg.byte[0] & 0x0f;
         if(!(disable & 1ull << c)) {
           synth_note(c, msg.byte[1] + DREF_PASS(transpose)->offset[c], true, msg.byte[2]);
+          played[c] |= 1ull << msg.byte[1];
+          changed = true;
         }
       } else if(ONEOF(control, 0xd0, 0xe0)) {
         int n = min(sizeof(msg.byte), fixed_length(control));
@@ -520,19 +522,35 @@ DTASK(playback, uint64_t) {
         continue;
       }
       uint64_t pressed = notes[c] | (c == channel ? *DREF(notes) : 0);
-      uint64_t released = prev_notes[c] & ~pressed;
+      uint64_t released = played[c] & ~pressed;
       COUNTUP(i, 64) {
         uint64_t bit = 1ull << i;
         if(released & bit) {
           synth_note(c, i + DREF_PASS(transpose)->offset[c], false, 0);
+          played[c] &= ~(1ull << i);
+          changed = true;
         }
       }
     }
   }
+  return changed;
+}
+
+DTASK(show_playback, uint64_t) {
+  uint64_t prev = *DREF(show_playback);
+  unsigned int beat = DREF(beat)->now;
+  uint64_t *notes = DREF(record)->notes[beat];
+  uint64_t *prev_notes = DREF(record)->notes[DREF(beat)->then];
+  int channel = *DREF_PASS(channel);
+  unsigned int disable = *DREF_PASS(disable_channel);
 
   uint64_t cur = *DREF(pads), cur_all = cur;
   uint64_t all_notes = 0;
-  COUNTUP(c, 16) all_notes |= notes[c];
+  COUNTUP(c, 16) {
+    if(!(disable & 1ull << c)) {
+      all_notes |= notes[c];
+    }
+  }
   bool first = true;
 
   COUNTUP(i, 64) {
@@ -568,7 +586,7 @@ DTASK(playback, uint64_t) {
     }
     set_pad_color(i, color);
   }
-  *DREF(playback) = cur_all;
+  *DREF(show_playback) = cur_all;
   return true;
 }
 

@@ -43,7 +43,16 @@
 
 #define STATE_FILE "midipush.state"
 
-const unsigned long long initial = PRINT_MIDI_MSG | LIGHT_BAR | PLAYBACK | SHOW_PROGRAM | PASSTHROUGH | SHOW_DISABLE_CHANNEL | TRANSPOSE | SHOW_VOLUME;
+const unsigned long long initial =
+  PRINT_MIDI_MSG |
+  LIGHT_BAR |
+  PLAYBACK |
+  SHOW_PROGRAM |
+  PASSTHROUGH |
+  SHOW_DISABLE_CHANNEL |
+  TRANSPOSE |
+  SHOW_VOLUME |
+  SHOW_PLAYBACK;
 
 static snd_rawmidi_t *rawmidi_in = NULL, *rawmidi_out = NULL, *synth_out = NULL;
 
