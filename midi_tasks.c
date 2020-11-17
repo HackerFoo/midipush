@@ -218,35 +218,33 @@ DTASK_ENABLE(record) {
 }
 
 // TODO this is too long
-DTASK(record, struct { map_t events; uint64_t notes[BEATS][16]; struct { int shift, first_beat, first_note; } copy; }) {
+DTASK(record, struct { map_t events; uint64_t notes[BEATS][16]; struct { int shift, first_beat, first_note; } copy; uint64_t extra[16]; }) {
   unsigned int beat = DREF_PASS(beat)->then;
   int channel = *DREF_PASS(channel);
   record_t *record = DREF(record);
+  COUNTUP(c, 16) record->extra[c] = 0;
 
   if(state->events & SET_PAGE) {
     if(DREF(set_page)->note >= 0) {
-      if(*DREF(recording)) {
-        if(record->copy.first_beat < 0) {
-          int start = page_beat(beat, DREF(set_page));
-          COUNTUP(i, BEATS) {
-            COUNTUP(c, 16) {
-              if(record->notes[start][c]) {
-                goto found_start;
-              }
+      if(record->copy.first_beat < 0) {
+        int start = page_beat(beat, DREF(set_page));
+        COUNTUP(i, BEATS) {
+          COUNTUP(c, 16) {
+            if(record->notes[start][c]) {
+              goto found_start;
             }
-            start = (start + 1) % BEATS;
           }
-        found_start:
-          record->copy.first_beat = start;
+          start = (start + 1) % BEATS;
         }
-        record->copy.shift = (beat + BEATS - record->copy.first_beat + 1) % BEATS;
+      found_start:
+        record->copy.first_beat = start;
       }
+      record->copy.shift = (beat + BEATS - record->copy.first_beat + 1) % BEATS;
     } else {
       record->copy.shift = -1;
       record->copy.first_note = -1;
       record->copy.first_beat = -1;
     }
-    printf("copy.shift: %d -> %d, %d\n", (int)page_beat(beat, DREF(set_page)), (int)beat, (int)record->copy.shift);
     return true;
   }
 
@@ -303,62 +301,74 @@ DTASK(record, struct { map_t events; uint64_t notes[BEATS][16]; struct { int shi
     map_filter(record->events, nonzero_value);
   }
 
-  if(*DREF(recording)) {
-    // copy
-    if(record->copy.shift >= 0) {
-      unsigned int disable = *DREF_PASS(disable_channel);
-      bool change = false;
-      // copy ahead one beat for playback
-      start = (start + 1) % BEATS;
-      stop = (stop + 1) % BEATS;
-      for(int i = start; i != stop; i = (i + 1) % BEATS) {
-        int src = (i + BEATS - record->copy.shift) % BEATS;
+  // copy
+  if(record->copy.shift >= 0) {
+    unsigned int disable = *DREF_PASS(disable_channel);
+    bool change = false;
+    // copy ahead one beat for playback
+    start = (start + 1) % BEATS;
+    stop = (stop + 1) % BEATS;
+    for(int i = start; i != stop; i = (i + 1) % BEATS) {
+      int src = (i + BEATS - record->copy.shift) % BEATS;
 
-        // events
-        map_iterator it = map_iterator_begin(record->events, src);
-        pair_t *p = map_find_iter(&it);
-        while(p) {
-          msg_data_t msg = { .data = p->second };
-          if(record->copy.first_note < 0) {
-            if((msg.byte[0] & 0xf0) == 0x90) {
-              record->copy.first_note = (int)msg.byte[1];
-            }
-          } else {
-            int c = msg.byte[0] & 0x0f;
-            if(!(disable & 1 << c)) {
-              if((msg.byte[0] & 0xf0) == 0x90) {
-                int transpose = DREF(set_page)->note - record->copy.first_note;
-                int n = msg.byte[1] + transpose;
-                if(INRANGE(n, 0, 127)) { // transpose notes
-                  msg.byte[1] = n;
-
-                  map_insert(record->events, PAIR(i, msg.data));
-                }
-              } else {
-                map_insert(record->events, PAIR(i, msg.data));
-              }
-              change = true;
-            }
+      // events
+      map_iterator it = map_iterator_begin(record->events, src);
+      pair_t *p = map_find_iter(&it);
+      while(p) {
+        msg_data_t msg = { .data = p->second };
+        if(record->copy.first_note < 0) {
+          if((msg.byte[0] & 0xf0) == 0x90) {
+            record->copy.first_note = (int)msg.byte[1];
           }
-          p = map_next(&it, p);
+        } else {
+          int c = msg.byte[0] & 0x0f;
+          if(!(disable & 1 << c)) {
+            if((msg.byte[0] & 0xf0) == 0x90) {
+              int transpose = DREF(set_page)->note - record->copy.first_note;
+              int n = msg.byte[1] + transpose;
+              if(INRANGE(n, 0, 127)) { // transpose notes
+                msg.byte[1] = n;
+                if(*DREF(recording)) {
+                  map_insert(record->events, PAIR(i, msg.data));
+                } else {
+                  synth_note(c, n + DREF_PASS(transpose)->offset[channel], true, msg.byte[2]);
+                }
+              }
+            } else {
+              if(*DREF(recording)) {
+                map_insert(record->events, PAIR(i, msg.data));
+              } else {
+                int n = min(sizeof(msg.byte), fixed_length(msg.byte[0]));
+                write_synth((seg_t) { .n = n, .s = msg.byte });
+              }
+            }
+            change = true;
+          }
         }
+        p = map_next(&it, p);
+      }
 
-        // notes
-        if(record->copy.first_note >= 0) {
-          int transpose = DREF(set_page)->note - record->copy.first_note;
-          COUNTUP(c, 16) {
-            if(!(disable & 1 << c)) {
-              uint64_t src_notes = transpose >= 0 ?
-                record->notes[src][c] << transpose :
-                record->notes[src][c] >> -transpose;
-              if(~record->notes[i][c] & src_notes) change = true;
+      // notes
+      if(record->copy.first_note >= 0) {
+        int transpose = DREF(set_page)->note - record->copy.first_note;
+        COUNTUP(c, 16) {
+          if(!(disable & 1 << c)) {
+            uint64_t src_notes = transpose >= 0 ?
+              record->notes[src][c] << transpose :
+              record->notes[src][c] >> -transpose;
+            if(~record->notes[i][c] & src_notes) change = true;
+            if(*DREF(recording)) {
               record->notes[i][c] |= src_notes;
             }
+            record->extra[c] |= src_notes;
           }
         }
       }
-      return change;
     }
+    return change;
+  }
+
+  if(*DREF(recording)) {
 
     // events
     if((state->events & CURRENT_NOTE) &&
@@ -494,6 +504,7 @@ DTASK(playback, struct { uint64_t played[16]; }) {
   uint64_t *played = &DREF(playback)->played;
   unsigned int beat = DREF(beat)->now;
   uint64_t *notes = DREF(record)->notes[beat];
+  uint64_t *extra = DREF(record)->extra;
   int channel = *DREF_PASS(channel);
   unsigned int disable = *DREF_PASS(disable_channel);
   bool changed = false;
@@ -512,7 +523,7 @@ DTASK(playback, struct { uint64_t played[16]; }) {
           changed = true;
         }
       } else if(ONEOF(control, 0xd0, 0xe0)) {
-        int n = min(sizeof(msg.byte), fixed_length(control));
+        int n = min(sizeof(msg.byte), fixed_length(msg.byte[0]));
         write_synth((seg_t) { .n = n, .s = msg.byte });
       }
       p = map_next(&it, p);
@@ -521,7 +532,7 @@ DTASK(playback, struct { uint64_t played[16]; }) {
       if(disable & 1ull << c) {
         continue;
       }
-      uint64_t pressed = notes[c] | (c == channel ? *DREF(notes) : 0);
+      uint64_t pressed = notes[c] | extra[c] | (c == channel ? *DREF(notes) : 0);
       uint64_t released = played[c] & ~pressed;
       COUNTUP(i, 64) {
         uint64_t bit = 1ull << i;
@@ -540,6 +551,7 @@ DTASK(show_playback, uint64_t) {
   uint64_t prev = *DREF(show_playback);
   unsigned int beat = DREF(beat)->now;
   uint64_t *notes = DREF(record)->notes[beat];
+  uint64_t *extra = DREF(record)->extra;
   uint64_t *prev_notes = DREF(record)->notes[DREF(beat)->then];
   int channel = *DREF_PASS(channel);
   unsigned int disable = *DREF_PASS(disable_channel);
@@ -548,7 +560,7 @@ DTASK(show_playback, uint64_t) {
   uint64_t all_notes = 0;
   COUNTUP(c, 16) {
     if(!(disable & 1ull << c)) {
-      all_notes |= notes[c];
+      all_notes |= notes[c] | extra[c];
     }
   }
   bool first = true;
@@ -560,7 +572,7 @@ DTASK(show_playback, uint64_t) {
     int color = 0;
     if(all_notes & note_bit) {
       cur_all |= bit;
-      if(notes[channel] & note_bit) {
+      if((notes[channel] | extra[channel]) & note_bit) {
         cur |= bit;
       }
     }
@@ -801,6 +813,19 @@ DTASK(transpose, struct { uint8_t offset[16]; }) {
     *off = clamp(7, 67, *off + (cc->control == 44 ? -12 : 12));
     printf_text(51, 2, "octave: %1d", (int)((*off - 7) / 12));
     all_notes_off(channel);
+    return true;
+  }
+  return false;
+}
+
+DTASK_ENABLE(poweroff) {
+  *DREF(poweroff) = false;
+}
+
+DTASK(poweroff, bool) {
+  const control_change_t *cc = DREF(control_change);
+  if(cc->control == 3 && cc->value) {
+    *DREF(poweroff) = true;
     return true;
   }
   return false;

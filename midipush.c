@@ -52,7 +52,8 @@ const unsigned long long initial =
   SHOW_DISABLE_CHANNEL |
   TRANSPOSE |
   SHOW_VOLUME |
-  SHOW_PLAYBACK;
+  SHOW_PLAYBACK |
+  POWEROFF;
 
 static snd_rawmidi_t *rawmidi_in = NULL, *rawmidi_out = NULL, *synth_out = NULL;
 
@@ -217,6 +218,10 @@ bool read_midi_msgs(snd_rawmidi_t *m, ring_buffer_t *rb, midi_tasks_state_t *sta
     while(msg = find_midi_msg(&buffer, buffer_end), msg.n) {
       midi_state.push_midi_msg_in = msg;
       dtask_run((dtask_state_t *)state, PUSH_MIDI_MSG_IN);
+      if(midi_state.poweroff) {
+        success = false;
+        break;
+      }
     }
 
     // push remaining bytes into the ring buffer
@@ -483,6 +488,6 @@ int main(int argc, char *argv[]) {
 
     snd_rawmidi_close(rawmidi_in);
     snd_rawmidi_close(rawmidi_out);
-    return 0;
+    return midi_state.poweroff ? 40 : 0;
   }
 }

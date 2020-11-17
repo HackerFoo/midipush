@@ -7,7 +7,7 @@
 ** DONE volume control
 ** DONE aftertouch
 ** DONE pitch bend
-** TODO arpeggiator
+** DONE arpeggiator
 * bugs
 ** DONE stop all instruments on new
 * references

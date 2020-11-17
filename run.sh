@@ -14,5 +14,9 @@ while true; do
     make
     connect_midi
     ./midipush 0 3
+    if [ $? == 40 ]; then
+        sleep 15
+        sudo poweroff
+    fi
     sleep 2
 done
