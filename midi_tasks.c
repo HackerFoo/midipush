@@ -75,7 +75,7 @@ DTASK(beat, struct { unsigned int then, now; }) {
     DREF(beat)->now = (DREF(beat)->then + 1) % BEATS;
   }
   if(state->events & SHUTTLE) {
-    DREF(beat)->now = (DREF(beat)->then + *DREF(shuttle) * BEATS_PER_PAGE / 4) % BEATS;
+    DREF(beat)->now = (DREF(beat)->then + BEATS + *DREF(shuttle) * BEATS_PER_PAGE / 4) % BEATS;
   }
   if((state->events & SET_PAGE) && DREF(set_page)->note == -1 && DREF(set_page)->keep != 0xff) {
     DREF(beat)->now = page_beat(DREF(beat)->then, DREF(set_page));
@@ -152,7 +152,11 @@ DTASK(control_change, struct { int control, value; } ) {
 DTASK(pads, uint64_t) {
   const pad_t *pad = DREF(pad);
   uint64_t prev = *DREF(pads);
-  set_bit(DREF(pads), pad->id, pad->pressed);
+  if(*DREF(new_button)) {
+    *DREF(pads) = 0;
+  } else {
+    set_bit(DREF(pads), pad->id, pad->pressed);
+  }
   return *DREF(pads) != prev;
 }
 
@@ -555,9 +559,9 @@ DTASK(show_playback, uint64_t) {
   uint64_t *prev_notes = DREF(record)->notes[DREF(beat)->then];
   int channel = *DREF_PASS(channel);
   unsigned int disable = *DREF_PASS(disable_channel);
-
   uint64_t cur = *DREF(pads), cur_all = cur;
   uint64_t all_notes = 0;
+
   COUNTUP(c, 16) {
     if(!(disable & 1ull << c)) {
       all_notes |= notes[c] | extra[c];
