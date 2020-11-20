@@ -163,18 +163,28 @@ DTASK(pads, uint64_t) {
 
 DTASK(current_note, struct { bool on; uint8_t id, velocity; }) {
   const pad_t *pad = DREF(pad);
-  *DREF(current_note) = (current_note_t) {
-    .on = pad->pressed,
-    .id = pad_to_note(pad->id),
-    .velocity = pad->velocity
-  };
-  return true;
+  int id = pad_to_note(pad->id) + *DREF(transpose);
+  if(INRANGE(id, 0, 127)) {
+    *DREF(current_note) = (current_note_t) {
+      .on = pad->pressed,
+      .id = pad_to_note(pad->id) + *DREF(transpose),
+      .velocity = pad->velocity
+    };
+    return true;
+  } else {
+    return false;
+  }
 }
 
 DTASK(notes, vec128b) {
+  (void)DREF(transpose);
   const current_note_t *note = DREF(current_note);
   vec128b prev = *DREF(notes);
-  vec128b_set_bit_val(DREF(notes), note->id, note->on);
+  if(state->events & TRANSPOSE) {
+    vec128b_set_zero(DREF(notes));
+  } else {
+    vec128b_set_bit_val(DREF(notes), note->id, note->on);
+  }
   return !vec128b_eq(DREF(notes), &prev);
 }
 
@@ -336,7 +346,7 @@ DTASK(record, struct { map_t events; vec128b notes[BEATS][16]; struct { int shif
                 if(*DREF(recording)) {
                   map_insert(record->events, PAIR(i, msg.data));
                 } else {
-                  synth_note(c, n + DREF_PASS(transpose)->offset[channel], true, msg.byte[2]);
+                  synth_note(c, n, true, msg.byte[2]);
                 }
               }
             } else {
@@ -428,7 +438,7 @@ DTASK(passthrough, bool) {
   bool change = false;
   if(state->events & CURRENT_NOTE) {
     synth_note(channel,
-               DREF(current_note)->id + DREF_PASS(transpose)->offset[channel],
+               DREF(current_note)->id,
                DREF(current_note)->on,
                DREF(current_note)->velocity);
     change = true;
@@ -505,7 +515,7 @@ DTASK(set_page, struct { int val, set, keep, note; }) {
 
 DTASK_ENABLE(playback) {
   COUNTUP(i, 64) {
-    set_pad_color(i, background_color(pad_to_note(i)));
+    set_pad_color(i, background_color(pad_to_note(i) + *DREF(transpose)));
   }
 }
 
@@ -527,7 +537,7 @@ DTASK(playback, struct { vec128b played[16]; }) {
       if(control == 0x90) {
         int c = msg.byte[0] & 0x0f;
         if(!(disable & 1ull << c)) {
-          synth_note(c, msg.byte[1] + DREF_PASS(transpose)->offset[c], true, msg.byte[2]);
+          synth_note(c, msg.byte[1], true, msg.byte[2]);
           vec128b_set_bit(&played[c], msg.byte[1]);
           changed = true;
         }
@@ -548,7 +558,7 @@ DTASK(playback, struct { vec128b played[16]; }) {
       vec128b_and_not(&released, &pressed);
       COUNTUP(i, 128) {
         if(vec128b_bit_is_set(&released, i)) {
-          synth_note(c, i + DREF_PASS(transpose)->offset[c], false, 0);
+          synth_note(c, i, false, 0);
           vec128b_clear_bit(&played[c], i);
           changed = true;
         }
@@ -579,35 +589,37 @@ DTASK(show_playback, uint64_t) {
 
   COUNTUP(i, 64) {
     uint64_t bit = 1ull << i;
-    int note = pad_to_note(i);
+    int note = pad_to_note(i) + *DREF(transpose);
     int color = 0;
-    if(vec128b_bit_is_set(&all_notes, note)) {
-      cur_all |= bit;
-      if(vec128b_bit_is_set(&notes[channel], note)) {
-        cur |= bit;
-      }
-    }
-    if((~prev & cur_all) & bit) { // set
-      if(*DREF(pads) & bit) {
-        if(first) { // show first pressed note
-          printf_text(0, 0, "note: %.2s, octave: %2d, number: %2d",
-                      get_note_name(note),
-                      get_note_octave(note) + (DREF_PASS(transpose)->offset[channel] - 7) / 12, // TODO simplify this
-                      note);
-          first = false;
+    if(INRANGE(note, 0, 127)) {
+      if(vec128b_bit_is_set(&all_notes, note)) {
+        cur_all |= bit;
+        if(vec128b_bit_is_set(&notes[channel], note)) {
+          cur |= bit;
         }
-        color = PAD_GREEN;
-      } else if(cur & bit) {
-        color = PAD_RED;
-      } else {
-        color = PAD_YELLOW;
       }
-    } else if((prev & ~cur_all) & bit) { // cleared
-      color = background_color(note);
-    } else {
-      continue;
+      if((~prev & cur_all) & bit) { // set
+        if(*DREF(pads) & bit) {
+          if(first) { // show first pressed note
+            printf_text(0, 0, "note: %.2s, octave: %1d, number: %3d",
+                        get_note_name(note),
+                        get_note_octave(note),
+                        note);
+            first = false;
+          }
+          color = PAD_GREEN;
+        } else if(cur & bit) {
+          color = PAD_RED;
+        } else {
+          color = PAD_YELLOW;
+        }
+      } else if((prev & ~cur_all) & bit) { // cleared
+        color = background_color(note);
+      } else {
+        continue;
+      }
+      set_pad_color(i, color);
     }
-    set_pad_color(i, color);
   }
   *DREF(show_playback) = cur_all;
   return true;
@@ -810,20 +822,16 @@ DTASK(disable_channel, unsigned int) {
 DTASK_ENABLE(transpose) {
   send_msg(0xb0, 44, 1);
   send_msg(0xb0, 45, 1);
-  COUNTUP(c, 16) {
-    DREF(transpose)->offset[c] = 43;
-  }
-  printf_text(51, 2, "octave: %1d", (int)(DREF(transpose)->offset[*DREF(channel)] - 7) / 12);
+  *DREF(transpose) = 43;
+  printf_text(51, 2, "octave: %1d", get_note_octave(*DREF(transpose) + 5));
 }
 
-DTASK(transpose, struct { uint8_t offset[16]; }) {
+DTASK(transpose, int8_t) {
   const control_change_t *cc = DREF(control_change);
   if(ONEOF(cc->control, 44, 45) && cc->value) {
-    int channel = *DREF_PASS(channel);
-    uint8_t *off = &DREF(transpose)->offset[channel];
-    *off = clamp(7, 67, *off + (cc->control == 44 ? -12 : 12));
-    printf_text(51, 2, "octave: %1d", (int)((*off - 7) / 12));
-    all_notes_off(channel);
+    int8_t *off = DREF(transpose);
+    *off = clamp(-5, 79, (int)*off + (cc->control == 44 ? -12 : 12));
+    printf_text(51, 2, "octave: %1d", get_note_octave(*off + 5)); // get octave of lowest C
     return true;
   }
   return false;

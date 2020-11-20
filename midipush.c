@@ -297,21 +297,21 @@ void all_notes_off(int channel) {
   });
 }
 
-//                        A  #  B   C  #  D  #  E  F  #  G  #
-uint8_t background[12] = {2, 0, 2, 45, 0, 2, 0, 2, 2, 0, 2, 0};
+//                         C  #  D  #  E  F  #  G  #  A  #  B
+uint8_t background[12] = {45, 0, 2, 0, 2, 2, 0, 2, 0, 2, 0, 2};
 uint8_t background_offset = 0;
-const char note_name[24] = "A A#B C C#D D#E F F#G G#";
+const char note_name[24] = "C C#D D#E F F#G G#A A#B ";
 
 char *get_note_name(unsigned int note) {
-  return &note_name[2 * ((note + 10) % 12)];
+  return &note_name[2 * (note % 12)];
 }
 
 int get_note_octave(unsigned int note) {
-  return (note + 10) / 12;
+  return note / 12;
 }
 
 uint8_t background_color(unsigned int note) {
-  return background[(note + 10 + background_offset) % LENGTH(background)];
+  return background[(note + background_offset) % LENGTH(background)];
 }
 
 unsigned int pad_to_note(unsigned int pad) {
