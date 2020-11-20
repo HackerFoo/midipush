@@ -26,6 +26,7 @@
 #include "startle/macros.h"
 #include "startle/map.h"
 #include "midipush.h"
+#include "vec128b.h"
 #include "midi_tasks.h"
 #endif
 
@@ -170,11 +171,11 @@ DTASK(current_note, struct { bool on; uint8_t id, velocity; }) {
   return true;
 }
 
-DTASK(notes, uint64_t) {
+DTASK(notes, vec128b) {
   const current_note_t *note = DREF(current_note);
-  uint64_t prev = *DREF(notes);
-  set_bit(DREF(notes), note->id, note->on);
-  return *DREF(notes) != prev;
+  vec128b prev = *DREF(notes);
+  vec128b_set_bit_val(DREF(notes), note->id, note->on);
+  return !vec128b_eq(DREF(notes), &prev);
 }
 
 DTASK_ENABLE(deleting) {
@@ -222,11 +223,11 @@ DTASK_ENABLE(record) {
 }
 
 // TODO this is too long
-DTASK(record, struct { map_t events; uint64_t notes[BEATS][16]; struct { int shift, first_beat, first_note; } copy; uint64_t extra[16]; }) {
+DTASK(record, struct { map_t events; vec128b notes[BEATS][16]; struct { int shift, first_beat, first_note; } copy; vec128b extra[16]; }) {
   unsigned int beat = DREF_PASS(beat)->then;
   int channel = *DREF_PASS(channel);
   record_t *record = DREF(record);
-  COUNTUP(c, 16) record->extra[c] = 0;
+  memset(record->extra, 0, sizeof(record->extra));
 
   if(state->events & SET_PAGE) {
     if(DREF(set_page)->note >= 0) {
@@ -234,7 +235,7 @@ DTASK(record, struct { map_t events; uint64_t notes[BEATS][16]; struct { int shi
         int start = page_beat(beat, DREF(set_page));
         COUNTUP(i, BEATS) {
           COUNTUP(c, 16) {
-            if(record->notes[start][c]) {
+            if(!vec128b_zero(&record->notes[start][c])) {
               goto found_start;
             }
           }
@@ -267,7 +268,7 @@ DTASK(record, struct { map_t events; uint64_t notes[BEATS][16]; struct { int shi
       map_filter(record->events, nonzero_value);
 
       COUNTUP(i, BEATS) {
-        record->notes[i][channel] = 0;
+        vec128b_set_zero(&record->notes[i][channel]);
       }
     }
     return true;
@@ -283,7 +284,7 @@ DTASK(record, struct { map_t events; uint64_t notes[BEATS][16]; struct { int shi
   if(*DREF(deleting)) {
     for(int i = start; i != stop; i = (i + 1) % BEATS) {
       // notes
-      record->notes[i][channel] &= ~*DREF(notes);
+      vec128b_and_not(&record->notes[i][channel], DREF(notes));
 
       // events
       map_iterator it = map_iterator_begin(record->events, i);
@@ -291,7 +292,7 @@ DTASK(record, struct { map_t events; uint64_t notes[BEATS][16]; struct { int shi
       while(p) {
         msg_data_t msg = { .data = p->second };
         if(msg.byte[0] == (0x90 | channel) &&
-           ((1ull << msg.byte[1]) & *DREF(notes))) {
+           vec128b_bit_is_set(DREF(notes), msg.byte[1])) {
           p->second = 0;
         }
         p = map_next(&it, p);
@@ -357,14 +358,18 @@ DTASK(record, struct { map_t events; uint64_t notes[BEATS][16]; struct { int shi
         int transpose = DREF(set_page)->note - record->copy.first_note;
         COUNTUP(c, 16) {
           if(!(disable & 1 << c)) {
-            uint64_t src_notes = transpose >= 0 ?
-              record->notes[src][c] << transpose :
-              record->notes[src][c] >> -transpose;
-            if(~record->notes[i][c] & src_notes) change = true;
-            if(*DREF(recording)) {
-              record->notes[i][c] |= src_notes;
+            vec128b src_notes = record->notes[src][c];
+            if(transpose >= 0) {
+              vec128b_shiftl(&src_notes, transpose);
+            } else {
+              vec128b_shiftr(&src_notes, -transpose);
             }
-            record->extra[c] |= src_notes;
+            //if(~record->notes[i][c] & src_notes) change = true;
+            if(!vec128b_zero(&src_notes)) change = true; // *** ^
+            if(*DREF(recording)) {
+              vec128b_or(&record->notes[i][c], &src_notes);
+            }
+            vec128b_or(&record->extra[c], &src_notes);
           }
         }
       }
@@ -403,7 +408,7 @@ DTASK(record, struct { map_t events; uint64_t notes[BEATS][16]; struct { int shi
     // notes
     int i = start;
     while(i != stop) {
-      record->notes[i][channel] |= *DREF(notes);
+      vec128b_or(&record->notes[i][channel], DREF(notes));
       i = (i + 1) % BEATS;
     }
 
@@ -504,11 +509,11 @@ DTASK_ENABLE(playback) {
   }
 }
 
-DTASK(playback, struct { uint64_t played[16]; }) {
-  uint64_t *played = &DREF(playback)->played;
+DTASK(playback, struct { vec128b played[16]; }) {
+  vec128b *played = DREF(playback)->played;
   unsigned int beat = DREF(beat)->now;
-  uint64_t *notes = DREF(record)->notes[beat];
-  uint64_t *extra = DREF(record)->extra;
+  vec128b *notes = DREF(record)->notes[beat];
+  vec128b *extra = DREF(record)->extra;
   int channel = *DREF_PASS(channel);
   unsigned int disable = *DREF_PASS(disable_channel);
   bool changed = false;
@@ -523,7 +528,7 @@ DTASK(playback, struct { uint64_t played[16]; }) {
         int c = msg.byte[0] & 0x0f;
         if(!(disable & 1ull << c)) {
           synth_note(c, msg.byte[1] + DREF_PASS(transpose)->offset[c], true, msg.byte[2]);
-          played[c] |= 1ull << msg.byte[1];
+          vec128b_set_bit(&played[c], msg.byte[1]);
           changed = true;
         }
       } else if(ONEOF(control, 0xd0, 0xe0)) {
@@ -536,13 +541,15 @@ DTASK(playback, struct { uint64_t played[16]; }) {
       if(disable & 1ull << c) {
         continue;
       }
-      uint64_t pressed = notes[c] | extra[c] | (c == channel ? *DREF(notes) : 0);
-      uint64_t released = played[c] & ~pressed;
-      COUNTUP(i, 64) {
-        uint64_t bit = 1ull << i;
-        if(released & bit) {
+      vec128b pressed = notes[c];
+      vec128b_or(&pressed, &extra[c]);
+      if(c == channel) vec128b_or(&pressed, DREF(notes));
+      vec128b released = played[c];
+      vec128b_and_not(&released, &pressed);
+      COUNTUP(i, 128) {
+        if(vec128b_bit_is_set(&released, i)) {
           synth_note(c, i + DREF_PASS(transpose)->offset[c], false, 0);
-          played[c] &= ~(1ull << i);
+          vec128b_clear_bit(&played[c], i);
           changed = true;
         }
       }
@@ -554,17 +561,18 @@ DTASK(playback, struct { uint64_t played[16]; }) {
 DTASK(show_playback, uint64_t) {
   uint64_t prev = *DREF(show_playback);
   unsigned int beat = DREF(beat)->now;
-  uint64_t *notes = DREF(record)->notes[beat];
-  uint64_t *extra = DREF(record)->extra;
-  uint64_t *prev_notes = DREF(record)->notes[DREF(beat)->then];
+  vec128b *extra = DREF(record)->extra;
   int channel = *DREF_PASS(channel);
   unsigned int disable = *DREF_PASS(disable_channel);
   uint64_t cur = *DREF(pads), cur_all = cur;
-  uint64_t all_notes = 0;
+  vec128b notes[16];
+  vec128b all_notes = {{0}};
 
   COUNTUP(c, 16) {
+    notes[c] = DREF(record)->notes[beat][c];
+    vec128b_or(&notes[c], &extra[c]);
     if(!(disable & 1ull << c)) {
-      all_notes |= notes[c] | extra[c];
+      vec128b_or(&all_notes, &notes[c]);
     }
   }
   bool first = true;
@@ -572,11 +580,10 @@ DTASK(show_playback, uint64_t) {
   COUNTUP(i, 64) {
     uint64_t bit = 1ull << i;
     int note = pad_to_note(i);
-    uint64_t note_bit = 1ull << note;
     int color = 0;
-    if(all_notes & note_bit) {
+    if(vec128b_bit_is_set(&all_notes, note)) {
       cur_all |= bit;
-      if((notes[channel] | extra[channel]) & note_bit) {
+      if(vec128b_bit_is_set(&notes[channel], note)) {
         cur |= bit;
       }
     }

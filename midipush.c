@@ -38,6 +38,7 @@
 #include "startle/stats.h"
 #include "startle/static_alloc.h"
 
+#include "vec128b.h"
 #include "midi_tasks.h"
 #include "midipush.h"
 
@@ -200,7 +201,7 @@ bool read_midi_msgs(snd_rawmidi_t *m, ring_buffer_t *rb, midi_tasks_state_t *sta
   while(success) {
 
     // read from ring buffer first
-    const char *buffer = midi_input_buffer;
+    char *buffer = midi_input_buffer;
     size_t remaining = static_sizeof(midi_input_buffer);
     ssize_t n = rb_read(rb, buffer, remaining);
 
@@ -490,4 +491,50 @@ int main(int argc, char *argv[]) {
     snd_rawmidi_close(rawmidi_out);
     return midi_state.poweroff ? 40 : 0;
   }
+}
+
+static
+void vec128b_print(vec128b *v) {
+  printf("v =");
+  COUNTDOWN(i, LENGTH(v->word)) {
+    printf(" %0.*x", sizeof(v->word[0]) * 2, v->word[i]);
+  }
+  printf("\n");
+}
+
+TEST(vec128b_shift) {
+  vec128b v;
+  FOREACH(i, v.word) {
+    v.word[i] = i + 1;
+  }
+  vec128b_print(&v);
+
+  printf("shift left ________________\n");
+  COUNTUP(i, 128 / 4) {
+    vec128b_shiftl(&v, 4);
+    vec128b_print(&v);
+  }
+  FOREACH(i, v.word) {
+    v.word[i] = i + 1;
+  }
+  COUNTUP(i, 128 / 32) {
+    vec128b_shiftl(&v, 32);
+    vec128b_print(&v);
+  }
+  printf("shift right ________________\n");
+  FOREACH(i, v.word) {
+    v.word[i] = i + 1;
+  }
+  COUNTUP(i, 128 / 4) {
+    vec128b_shiftr(&v, 4);
+    vec128b_print(&v);
+  }
+  FOREACH(i, v.word) {
+    v.word[i] = i + 1;
+  }
+  COUNTUP(i, 128 / 32) {
+    vec128b_shiftr(&v, 32);
+    vec128b_print(&v);
+  }
+  return 0;
 }
