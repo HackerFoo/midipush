@@ -44,7 +44,7 @@ static_assert(MIDI_TASKS_COUNT <= 64, "too many tasks");
 DTASK_GROUP(midi_tasks)
 
 // passthrough
-DTASK(push_midi_msg_in, seg_t) {
+DTASK(midi_in, struct { int id; seg_t msg; }) {
   return true;
 }
 
@@ -85,8 +85,8 @@ DTASK(beat, struct { unsigned int then, now; }) {
 }
 
 DTASK(print_midi_msg, bool) {
-  const seg_t *msg = DREF(push_midi_msg_in);
-  printf("0x%x:", (unsigned char)msg->s[0]);
+  const seg_t *msg = &DREF(midi_in)->msg;
+  printf("%d > 0x%x:", DREF(midi_in)->id, (unsigned char)msg->s[0]);
   RANGEUP(i, 1, msg->n) {
     printf(" %d", (unsigned char)msg->s[i]);
   }
@@ -103,7 +103,8 @@ void set_bit(uint64_t *s, int k, bool v) {
 }
 
 DTASK(pad, struct { bool pressed; uint8_t id, velocity; }) {
-  const seg_t *msg_in = DREF(push_midi_msg_in);
+  if(DREF(midi_in)->id != 0) return false;
+  const seg_t *msg_in = &DREF(midi_in)->msg;
   unsigned char control = msg_in->s[0] & 0xf0;
   if(ONEOF(control, 0x80, 0x90)) {
     int p = msg_in->s[1] - 36;
@@ -119,8 +120,24 @@ DTASK(pad, struct { bool pressed; uint8_t id, velocity; }) {
   return false;
 }
 
+DTASK(external_key, struct { bool pressed; uint8_t id, velocity; }) {
+  if(DREF(midi_in)->id == 0) return false;
+  const seg_t *msg_in = &DREF(midi_in)->msg;
+  unsigned char control = msg_in->s[0] & 0xf0;
+  if(ONEOF(control, 0x80, 0x90)) {
+    *DREF(external_key) = (external_key_t) {
+      .pressed = control == 0x90,
+      .id = msg_in->s[1],
+      .velocity = msg_in->s[2]
+    };
+    return true;
+  }
+  return false;
+}
+
 DTASK(channel_pressure, int) {
-  const seg_t *msg_in = DREF(push_midi_msg_in);
+  if(DREF(midi_in)->id != 0) return false;
+  const seg_t *msg_in = &DREF(midi_in)->msg;
   unsigned char control = msg_in->s[0] & 0xf0;
   if(control == 0xd0) {
     *DREF(channel_pressure) = msg_in->s[1];
@@ -130,7 +147,8 @@ DTASK(channel_pressure, int) {
 }
 
 DTASK(pitch_bend, int) {
-  const seg_t *msg_in = DREF(push_midi_msg_in);
+  if(DREF(midi_in)->id != 0) return false;
+  const seg_t *msg_in = &DREF(midi_in)->msg;
   unsigned char control = msg_in->s[0] & 0xf0;
   if(control == 0xe0) {
     *DREF(pitch_bend) = (msg_in->s[1] & 0x7f) | (((int)msg_in->s[2] & 0x7f) << 7) ;
@@ -140,7 +158,8 @@ DTASK(pitch_bend, int) {
 }
 
 DTASK(control_change, struct { int control, value; } ) {
-  const seg_t *msg_in = DREF(push_midi_msg_in);
+  if(DREF(midi_in)->id != 0) return false;
+  const seg_t *msg_in = &DREF(midi_in)->msg;
   unsigned char control = msg_in->s[0] & 0xf0;
   if(control == 0xb0) {
     DREF(control_change)->control = msg_in->s[1];
@@ -162,18 +181,28 @@ DTASK(pads, uint64_t) {
 }
 
 DTASK(current_note, struct { bool on; uint8_t id, velocity; }) {
-  const pad_t *pad = DREF(pad);
-  int id = pad_to_note(pad->id) + *DREF(transpose);
-  if(INRANGE(id, 0, 127)) {
+  if(state->events & PAD) {
+    const pad_t *pad = DREF(pad);
+    int id = pad_to_note(pad->id) + *DREF(transpose);
+    if(INRANGE(id, 0, 127)) {
+      *DREF(current_note) = (current_note_t) {
+        .on = pad->pressed,
+        .id = pad_to_note(pad->id) + *DREF(transpose),
+        .velocity = pad->velocity
+      };
+      return true;
+    }
+  }
+  if(state->events & EXTERNAL_KEY) {
+    const pad_t *key = DREF(external_key);
     *DREF(current_note) = (current_note_t) {
-      .on = pad->pressed,
-      .id = pad_to_note(pad->id) + *DREF(transpose),
-      .velocity = pad->velocity
+      .on = key->pressed,
+      .id = key->id,
+      .velocity = key->velocity
     };
     return true;
-  } else {
-    return false;
   }
+  return false;
 }
 
 DTASK(notes, vec128b) {
@@ -576,7 +605,7 @@ DTASK(show_playback, uint64_t) {
   unsigned int disable = *DREF_PASS(disable_channel);
   uint64_t cur = *DREF(pads), cur_all = cur;
   vec128b notes[16];
-  vec128b all_notes = {{0}};
+  vec128b all_notes = *DREF(notes);
 
   COUNTUP(c, 16) {
     notes[c] = DREF(record)->notes[beat][c];

@@ -42,6 +42,8 @@
 #include "midi_tasks.h"
 #include "midipush.h"
 
+#define DEBUG 0
+
 #define STATE_FILE "midipush.state"
 
 const unsigned long long initial =
@@ -56,7 +58,30 @@ const unsigned long long initial =
   SHOW_PLAYBACK |
   POWEROFF;
 
-static snd_rawmidi_t *rawmidi_in = NULL, *rawmidi_out = NULL, *synth_out = NULL;
+struct midi {
+  snd_rawmidi_t *in, *out;
+  ring_buffer_t *rb;
+  int id;
+  char last_status; // some interfaces omit repeated status bytes (Roland UM-1)
+};
+
+struct midi push, synth, ext;
+
+static
+void midi_open(struct midi *p, int id, int card, int device, char *buf, size_t buf_n) {
+  char portname[16];
+  snprintf(portname, sizeof(portname), "hw:%d,%d,0", card, device);
+  int n = snd_rawmidi_open(&p->in, &p->out, portname, SND_RAWMIDI_SYNC | SND_RAWMIDI_NONBLOCK);
+  assert_throw(n >= 0, "Problem opening MIDI port %s: %s", portname, snd_strerror(n));
+  p->rb = rb_init(buf, buf_n);
+  p->id = id;
+}
+
+static
+void midi_close(struct midi *p) {
+  snd_rawmidi_close(p->in);
+  snd_rawmidi_close(p->out);
+}
 
 static char push_init[] = {
   0xF0, 0x47, 0x7F, 0x15, 0x63, 0x00, 0x01, 0x05, 0xF7, // touch strip mode
@@ -136,9 +161,10 @@ void set_pad_curve(int x) {
 
 static midi_tasks_state_t midi_state = DTASK_STATE(midi_tasks, 0, 0);
 
-STATIC_ALLOC(midi_input_buffer, char, 1024);
-STATIC_ALLOC_DEPENDENT(midi_input_rb_buffer, char, sizeof(ring_buffer_t) + static_sizeof(midi_input_buffer));
-static ring_buffer_t *midi_input_rb;
+STATIC_ALLOC(midi_input_buffer, char, 128);
+STATIC_ALLOC_DEPENDENT(push_rb, char, sizeof(ring_buffer_t) + static_sizeof(midi_input_buffer));
+STATIC_ALLOC_DEPENDENT(synth_rb, char, sizeof(ring_buffer_t) + static_sizeof(midi_input_buffer));
+STATIC_ALLOC_DEPENDENT(ext_rb, char, sizeof(ring_buffer_t) + static_sizeof(midi_input_buffer));
 
 int fixed_length(unsigned char c) {
   int
@@ -196,29 +222,38 @@ seg_t find_midi_msg(const char **s, const char *e) {
 }
 
 static
-bool read_midi_msgs(snd_rawmidi_t *m, ring_buffer_t *rb, midi_tasks_state_t *state) {
+bool read_midi_msgs(struct midi *m, midi_tasks_state_t *state) {
   bool success = true;
   while(success) {
 
     // read from ring buffer first
-    char *buffer = midi_input_buffer;
-    size_t remaining = static_sizeof(midi_input_buffer);
-    ssize_t n = rb_read(rb, buffer, remaining);
+    midi_input_buffer[0] = m->last_status;
+    char *buffer = midi_input_buffer + 1;
+    size_t remaining = static_sizeof(midi_input_buffer) - 1;
+    ssize_t n = rb_read(m->rb, buffer, remaining);
 
     // fill remainder from input
-    ssize_t r = snd_rawmidi_read(m, buffer + n, remaining - n);
+    ssize_t r = snd_rawmidi_read(m->in, buffer + n, remaining - n);
     if(r < 0) {
       success = r == -EAGAIN;
       break;
     } else {
+#if DEBUG
+      printf("read %d >", m->id);
+      COUNTUP(i, r) printf(" %02x", buffer[n + i]);
+      printf("\n");
+#endif
       n += r;
     }
 
     const char *buffer_end = buffer + n;
+    if(!((unsigned char)buffer[0] & 0x80)) buffer--;
     seg_t msg;
     while(msg = find_midi_msg(&buffer, buffer_end), msg.n) {
-      midi_state.push_midi_msg_in = msg;
-      dtask_run((dtask_state_t *)state, PUSH_MIDI_MSG_IN);
+      m->last_status = msg.s[0];
+      midi_state.midi_in.id = m->id;
+      midi_state.midi_in.msg = msg;
+      dtask_run((dtask_state_t *)state, MIDI_IN);
       if(midi_state.poweroff) {
         success = false;
         break;
@@ -226,25 +261,25 @@ bool read_midi_msgs(snd_rawmidi_t *m, ring_buffer_t *rb, midi_tasks_state_t *sta
     }
 
     // push remaining bytes into the ring buffer
-    n = rb_write(rb, buffer, buffer_end - buffer);
+    n = rb_write(m->rb, buffer, buffer_end - buffer);
     success &= n == buffer_end - buffer;
   }
   return success;
 }
 
 void write_midi(seg_t s) {
-  snd_rawmidi_write(rawmidi_out, s.s, s.n);
+  snd_rawmidi_write(push.out, s.s, s.n);
 }
 
 void write_synth(seg_t s) {
-  /*
+#if DEBUG
   printf("synth: 0x%x:", (unsigned char)s.s[0]);
   RANGEUP(i, 1, s.n) {
     printf(" %d", (unsigned char)s.s[i]);
   }
   printf("\n");
-  */
-  snd_rawmidi_write(synth_out, s.s, s.n);
+#endif
+  snd_rawmidi_write(synth.out, s.s, s.n);
 }
 
 void synth_note(uint8_t channel, uint8_t note, bool on, uint8_t pressure) {
@@ -359,7 +394,7 @@ static struct pollfd pfds_in[16];
 static int pfds_in_n = 0;
 static
 int get_pfds(snd_rawmidi_t *m, struct pollfd *pfds, int pfds_n) {
-  int count = snd_rawmidi_poll_descriptors_count(rawmidi_in);
+  int count = snd_rawmidi_poll_descriptors_count(push.in);
   assert_throw(count <= pfds_n, "pfds_n not large enough\n");
   count = snd_rawmidi_poll_descriptors(m, pfds, pfds_n);
 
@@ -426,7 +461,6 @@ STATIC_ALLOC(record, pair_t, 1 << 15);
 int main(int argc, char *argv[]) {
   static_alloc_init();
   log_init();
-  midi_input_rb = rb_init(midi_input_rb_buffer, static_sizeof(midi_input_rb_buffer));
 
   error_t test_error;
   CATCH(&test_error, true) {
@@ -434,61 +468,70 @@ int main(int argc, char *argv[]) {
     print_last_log_msg();
     return -1;
   } else {
+
+    // run tests if requested
     if(argc >= 3 && strcmp(argv[1], "-t") == 0) {
       run_test(string_seg(argv[2]));
       return 0;
     }
+
+    // get parameters
     int curve = 1, threshold = 15;
     if(argc >= 3) {
       curve = strtol(argv[1], NULL, 0);
       threshold = strtol(argv[2], NULL, 0);
     }
-    int card = find_card("Ableton Push");
-    assert_throw(card >= 0, "Ableton Push not found.");
-    int synth = find_card("VirMIDI");
-    assert_throw(synth >= 0, "Synth not found.");
 
-    ssize_t n;
-    rawmidi_in = NULL;
-    rawmidi_out = NULL;
-    char portname[16];
+    // open devices
+    int push_card = find_card("Ableton Push");
+    assert_throw(push_card >= 0, "Ableton Push not found.");
+    int virtual_card = find_card("VirMIDI");
+    assert_throw(virtual_card >= 0, "VirMIDI not found.");
 
-    // open push
-    snprintf(portname, sizeof(portname), "hw:%d,0,0", card);
-    n = snd_rawmidi_open(&rawmidi_in, &rawmidi_out, portname, SND_RAWMIDI_SYNC | SND_RAWMIDI_NONBLOCK);
-    assert_throw(n >= 0, "Problem opening MIDI port: %s", snd_strerror(n));
+    midi_open(&push,  0, push_card,    0, push_rb,  static_sizeof(push_rb));
+    midi_open(&synth, 1, virtual_card, 0, synth_rb, static_sizeof(synth_rb));
+    midi_open(&ext,   2, virtual_card, 1, ext_rb,   static_sizeof(ext_rb));
+
+    // initialize Push
     COUNTUP(i, sizeof(push_init)) {
       char c = push_init[i];
-      n = snd_rawmidi_write(rawmidi_out, &c, 1);
+      int n = snd_rawmidi_write(push.out, &c, 1);
       assert_throw(n >= 0, "Problem sending initialization: %s", snd_strerror(n));
       if((unsigned char)c & 0x80) usleep(1000);
     }
     set_pad_curve(curve);
     set_pad_threshold(threshold);
 
-    // open synth
-    snprintf(portname, sizeof(portname), "hw:%d,0,0", synth);
-    n = snd_rawmidi_open(NULL, &synth_out, portname, SND_RAWMIDI_SYNC | SND_RAWMIDI_NONBLOCK);
-    assert_throw(n >= 0, "Problem opening MIDI port: %s", snd_strerror(n));
-
+    // load state
     if(!load_state(STATE_FILE, &midi_state)) {
       midi_state.record.events = init_map(record, record_size);
     }
 
-    pfds_in_n = get_pfds(rawmidi_in, pfds_in, LENGTH(pfds_in));
+    // collect poll fds
+    pfds_in_n = get_pfds(push.in, pfds_in, LENGTH(pfds_in));
+    pfds_in_n += get_pfds(synth.in, pfds_in + pfds_in_n, LENGTH(pfds_in) - pfds_in_n);
+    pfds_in_n += get_pfds(ext.in, pfds_in + pfds_in_n, LENGTH(pfds_in) - pfds_in_n);
+
+    // enable and select tasks
     dtask_enable((dtask_state_t *)&midi_state, initial);
     dtask_select((dtask_state_t *)&midi_state);
-    while(read_midi_msgs(rawmidi_in, midi_input_rb, &midi_state)) {
+
+    // event loop
+    while(read_midi_msgs(&push,  &midi_state) &&
+          read_midi_msgs(&synth, &midi_state) &&
+          read_midi_msgs(&ext,   &midi_state)) {
       poll(pfds_in, pfds_in_n, 10);
       gettimeofday(&midi_state.time_of_day, NULL);
       dtask_run((dtask_state_t *)&midi_state, TIME_OF_DAY);
     }
 
+    // disable tasks, save state, and close
     dtask_disable((dtask_state_t *)&midi_state, initial);
     save_state(STATE_FILE, &midi_state);
 
-    snd_rawmidi_close(rawmidi_in);
-    snd_rawmidi_close(rawmidi_out);
+    midi_close(&push);
+    midi_close(&synth);
+    midi_close(&ext);
     return midi_state.poweroff ? 40 : 0;
   }
 }
