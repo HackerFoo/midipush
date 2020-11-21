@@ -8,6 +8,8 @@
 ** DONE aftertouch
 ** DONE pitch bend
 ** DONE arpeggiator
+** TODO change track length
+** TODO allow using disabled tracks for arpeggiator
 * bugs
 ** DONE stop all instruments on new
 * references
