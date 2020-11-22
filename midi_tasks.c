@@ -229,6 +229,11 @@ DTASK(deleting, bool) {
     send_msg(0xb0, 118, *DREF(deleting) ? 2 : 1);
     return true;
   }
+  // automatically disable after new
+  if((state->events & NEW_BUTTON) && !*DREF(new_button)) {
+    *DREF(deleting) = false;
+    send_msg(0xb0, 118, 1);
+  }
   return false;
 }
 
@@ -262,7 +267,7 @@ DTASK_ENABLE(record) {
 }
 
 // TODO this is too long
-DTASK(record, struct { map_t events; vec128b notes[BEATS][16]; struct { int shift, first_beat, first_note; } copy; vec128b extra[16]; }) {
+DTASK(record, struct { map_t events; vec128b notes[BEATS][16]; struct { int shift, first_beat, first_note; } copy; vec128b extra[16]; unsigned int active; }) {
   unsigned int beat = DREF_PASS(beat)->then;
   int channel = *DREF_PASS(channel);
   record_t *record = DREF(record);
@@ -296,6 +301,7 @@ DTASK(record, struct { map_t events; vec128b notes[BEATS][16]; struct { int shif
     if(*DREF(deleting)) {
       map_clear(record->events);
       memset(record->notes, 0, sizeof(record->notes));
+      record->active = 0;
     } else {
       FORMAP(i, record->events) {
         pair_t *p = &record->events[i];
@@ -309,6 +315,7 @@ DTASK(record, struct { map_t events; vec128b notes[BEATS][16]; struct { int shif
       COUNTUP(i, BEATS) {
         vec128b_set_zero(&record->notes[i][channel]);
       }
+      record->active &= ~(1 << channel);
     }
     return true;
   }
@@ -417,7 +424,7 @@ DTASK(record, struct { map_t events; vec128b notes[BEATS][16]; struct { int shif
   }
 
   if(*DREF(recording)) {
-
+    bool change = false;
     // events
     if((state->events & CURRENT_NOTE) &&
        DREF(current_note)->on) {
@@ -427,6 +434,7 @@ DTASK(record, struct { map_t events; vec128b notes[BEATS][16]; struct { int shif
           DREF(current_note)->velocity
         }};
       map_insert(record->events, PAIR(beat, msg.data));
+      change = true;
     }
     if(state->events & CHANNEL_PRESSURE) {
       msg_data_t msg = {{
@@ -434,6 +442,7 @@ DTASK(record, struct { map_t events; vec128b notes[BEATS][16]; struct { int shif
           *DREF(channel_pressure)
         }};
       map_insert(record->events, PAIR(beat, msg.data));
+      change = true;
     }
     if(state->events & PITCH_BEND) {
       msg_data_t msg = {{
@@ -442,6 +451,7 @@ DTASK(record, struct { map_t events; vec128b notes[BEATS][16]; struct { int shif
           (*DREF(pitch_bend) >> 7) & 0x7f
         }};
       map_insert(record->events, PAIR(beat, msg.data));
+      change = true;
     }
 
     // notes
@@ -451,7 +461,10 @@ DTASK(record, struct { map_t events; vec128b notes[BEATS][16]; struct { int shif
       i = (i + 1) % BEATS;
     }
 
-    return true;
+    // mark the channel active
+    if(change) record->active |= 1 << channel;
+
+    return change;
   }
 
   return false;
@@ -698,25 +711,32 @@ DTASK(playing, bool) {
     *DREF(playing) = !*DREF(playing);
     send_msg(0xb0, 85, *DREF(playing) ? 1 : 2);
     if(*DREF(playing)) { // send programs on play
-      COUNTUP(channel, 16) {
-        int *p = &DREF_PASS(program)->program[channel];
-        int *b = &DREF_PASS(program)->bank[channel];
-        write_synth((seg_t) { // bank
+      COUNTDOWN(c, 16) {
+        write_synth((seg_t) { // bank LSB
             .n = 3,
-            .s = (char [3]) { 0xb0 | channel, 32, *b }
+            .s = (char [3]) { 0xb0 | c, 32,
+              DREF_PASS(program)->bank[c] }
           });
         write_synth((seg_t) { // program
             .n = 2,
-            .s = (char [2]) { 0xc0 | channel, *p }
+            .s = (char [2]) { 0xc0 | c,
+              DREF_PASS(program)->program[c] }
           });
         write_synth((seg_t) { // volume
             .n = 3,
-            .s = (char [3]) { 0xb0 | channel, 7,
-              DREF_PASS(volume)->arr[channel] }
+            .s = (char [3]) { 0xb0 | c, 7,
+              DREF_PASS(volume)->arr[c] }
           });
       }
     } else {
-      COUNTUP(c, 16) all_notes_off(c);
+      COUNTDOWN(c, 16) {
+        all_notes_off(c);
+        write_synth((seg_t) { // volume
+            .n = 3,
+            .s = (char [3]) { 0xb0 | c, 7,
+              DREF_PASS(volume)->arr[c] }
+          });
+      }
     }
     return true;
   }
@@ -787,14 +807,14 @@ DTASK(program, struct { int bank[16], program[16]; }) {
     pb = (pb + val + BANKS * 128) % (BANKS * 128);
     *b = pb >> 7;
     *p = pb & 0x7f;
-    write_synth((seg_t) { // bank
-      .n = 3,
-      .s = (char [3]) { 0xb0 | channel, 32, *b }
-    });
+    write_synth((seg_t) { // bank LSB
+        .n = 3,
+        .s = (char [3]) { 0xb0 | channel, 32, *b }
+      });
     write_synth((seg_t) { // program
-      .n = 2,
-      .s = (char [2]) { 0xc0 | channel, *p }
-    });
+        .n = 2,
+        .s = (char [2]) { 0xc0 | channel, *p }
+      });
     return true;
   }
   return false;
@@ -834,7 +854,8 @@ DTASK_ENABLE(show_disable_channel) {
 }
 
 DTASK(show_disable_channel, bool) {
-  send_msg(0xb0, 48, *DREF(disable_channel) & (1ull << *DREF(channel)) ? 0 : 4);
+  unsigned int bit = 1ull << *DREF(channel);
+  send_msg(0xb0, 48, *DREF(disable_channel) & bit ? (DREF(record)->active & bit ? 2 : 0) : 4);
   return true;
 }
 

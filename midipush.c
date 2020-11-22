@@ -279,7 +279,12 @@ void write_synth(seg_t s) {
   }
   printf("\n");
 #endif
-  snd_rawmidi_write(synth.out, s.s, s.n);
+  while(s.n) {
+    ssize_t n = snd_rawmidi_write(synth.out, s.s, s.n);
+    assert_throw(n >= 0, "write_synth: write error %d\n", n);
+    s.s += n;
+    s.n -= n;
+  }
 }
 
 void synth_note(uint8_t channel, uint8_t note, bool on, uint8_t pressure) {
