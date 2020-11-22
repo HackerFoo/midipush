@@ -1,0 +1,14 @@
+[Unit]
+Description=MidiPush
+After=network.target
+
+[Service]
+ExecStart=/home/pi/src/midipush/run.sh
+WorkingDirectory=/home/pi/src/midipush
+StandardOutput=inherit
+StandardError=inherit
+Restart=always
+User=pi
+
+[Install]
+WantedBy=multi-user.target
