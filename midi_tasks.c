@@ -327,7 +327,13 @@ DTASK(record, struct { map_t events; vec128b notes[BEATS][16]; struct { int shif
     stop = tmp;
   }
 
-  if(*DREF(deleting)) {
+  if(*DREF(deleting) &&
+     !vec128b_zero(DREF(notes))) {
+
+    // for clearing tails later
+    vec128b clear = *DREF(notes);
+    vec128b_and(&clear, &record->notes[(stop + BEATS - 1) % BEATS][channel]);
+
     for(int i = start; i != stop; i = (i + 1) % BEATS) {
       // notes
       vec128b_and_not(&record->notes[i][channel], DREF(notes));
@@ -343,6 +349,12 @@ DTASK(record, struct { map_t events; vec128b notes[BEATS][16]; struct { int shif
         }
         p = map_next(&it, p);
       }
+    }
+
+    // clear the tails from notes that have been deleted
+    for(int i = stop; !vec128b_zero(&clear); i = (i + 1) % BEATS) {
+      vec128b_and(&clear, &record->notes[i][channel]);
+      vec128b_and_not(&record->notes[i][channel], &clear);
     }
     return true;
   }
@@ -379,7 +391,7 @@ DTASK(record, struct { map_t events; vec128b notes[BEATS][16]; struct { int shif
               int n = msg.byte[1] + transpose;
               if(INRANGE(n, 0, 127)) { // transpose notes
                 msg.byte[1] = n;
-                if(*DREF(recording)) {
+                if(*DREF(recording) && !vec128b_bit_is_set(&record->notes[i][c], n)) {
                   map_insert(record->events, PAIR(i, msg.data));
                 } else {
                   synth_note(c, n, true, msg.byte[2]);
@@ -427,7 +439,8 @@ DTASK(record, struct { map_t events; vec128b notes[BEATS][16]; struct { int shif
     bool change = false;
     // events
     if((state->events & CURRENT_NOTE) &&
-       DREF(current_note)->on) {
+       DREF(current_note)->on &&
+       !vec128b_bit_is_set(&record->notes[beat][channel], DREF(current_note)->id)) {
       msg_data_t msg = {{
           0x90 | channel,
           DREF(current_note)->id,
@@ -610,61 +623,59 @@ DTASK(playback, struct { vec128b played[16]; }) {
   return changed;
 }
 
-DTASK(show_playback, uint64_t) {
-  uint64_t prev = *DREF(show_playback);
+DTASK(show_playback, struct { uint8_t pad_state[64]; }) {
+  uint8_t *pad_state = DREF(show_playback)->pad_state;
   unsigned int beat = DREF(beat)->now;
   vec128b *extra = DREF(record)->extra;
-  int channel = *DREF_PASS(channel);
-  unsigned int disable = *DREF_PASS(disable_channel);
-  uint64_t cur = *DREF(pads), cur_all = cur;
+  int channel = *DREF(channel);
+  unsigned int disable = *DREF(disable_channel);
+  uint64_t pads = *DREF(pads);
   vec128b notes[16];
   vec128b all_notes = *DREF(notes);
 
   COUNTUP(c, 16) {
     notes[c] = DREF(record)->notes[beat][c];
     vec128b_or(&notes[c], &extra[c]);
-    if(!(disable & 1ull << c)) {
+    if(!(disable & 1u << c)) {
       vec128b_or(&all_notes, &notes[c]);
     }
   }
+  if(!(disable & 1u << channel)) {
+    vec128b_or(&notes[channel], DREF(notes));
+  }
   bool first = true;
+  bool changed = false;
 
   COUNTUP(i, 64) {
     uint64_t bit = 1ull << i;
     int note = pad_to_note(i) + *DREF(transpose);
     int color = 0;
     if(INRANGE(note, 0, 127)) {
+      color = background_color(note);
       if(vec128b_bit_is_set(&all_notes, note)) {
-        cur_all |= bit;
+        color = PAD_YELLOW;
         if(vec128b_bit_is_set(&notes[channel], note)) {
-          cur |= bit;
-        }
-      }
-      if((~prev & cur_all) & bit) { // set
-        if(*DREF(pads) & bit) {
-          if(first) { // show first pressed note
-            printf_text(0, 0, "note: %.2s, octave: %1d, number: %3d",
-                        get_note_name(note),
-                        get_note_octave(note),
-                        note);
-            first = false;
-          }
-          color = PAD_GREEN;
-        } else if(cur & bit) {
           color = PAD_RED;
-        } else {
-          color = PAD_YELLOW;
         }
-      } else if((prev & ~cur_all) & bit) { // cleared
-        color = background_color(note);
-      } else {
-        continue;
       }
+      if(pads & bit) {
+        color = PAD_GREEN;
+        if(first) { // show first pressed note
+          printf_text(0, 0, "note: %.2s, octave: %1d, number: %3d",
+                      get_note_name(note),
+                      get_note_octave(note),
+                      note);
+          first = false;
+        }
+      }
+    }
+    if(pad_state[i] != color) {
       set_pad_color(i, color);
+      pad_state[i] = color;
+      changed = true;
     }
   }
-  *DREF(show_playback) = cur_all;
-  return true;
+  return changed;
 }
 
 DTASK_ENABLE(light_bar) {

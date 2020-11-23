@@ -26,7 +26,7 @@ connect_midi() {
 while true; do
     if connect_midi; then
         make
-        ./midipush 1 3 && true
+        ./midipush 1 5 && true
         if [ $? == 40 ]; then
             sleep 15
             sudo poweroff
