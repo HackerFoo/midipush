@@ -39,6 +39,10 @@
 #define PAD_YELLOW 13
 #define PAD_GREEN 21
 
+#define MOD_INC(x, m, n) ((x + n) % m)
+#define MOD_DEC(x, m, n) ((x + m - n) % m)
+#define MOD_OFFSET(x, m, n) ((x + m + n) % m)
+
 static_assert(MIDI_TASKS_COUNT <= 64, "too many tasks");
 
 DTASK_GROUP(midi_tasks)
@@ -73,10 +77,10 @@ DTASK(beat, struct { unsigned int then, now; }) {
   DREF(beat)->then = DREF(beat)->now;
   if((state->events & TICK) && *DREF(playing)) {
     (void)*DREF(tick);
-    DREF(beat)->now = (DREF(beat)->then + 1) % BEATS;
+    DREF(beat)->now = MOD_INC(DREF(beat)->then, BEATS, 1);
   }
   if(state->events & SHUTTLE) {
-    DREF(beat)->now = (DREF(beat)->then + BEATS + *DREF(shuttle) * BEATS_PER_PAGE / 4) % BEATS;
+    DREF(beat)->now = MOD_OFFSET(DREF(beat)->then, BEATS, *DREF(shuttle) * BEATS_PER_PAGE / 4);
   }
   if((state->events & SET_PAGE) && DREF(set_page)->note == -1 && DREF(set_page)->keep != 0xff) {
     DREF(beat)->now = page_beat(DREF(beat)->then, DREF(set_page));
@@ -266,6 +270,21 @@ DTASK_ENABLE(record) {
   record->copy.first_beat = -1;
 }
 
+static
+void delete_notes(record_t *record, unsigned int beat, unsigned int channel, const vec128b *notes) {
+  vec128b_and_not(&record->notes[beat][channel], notes);
+  map_iterator it = map_iterator_begin(record->events, beat);
+  pair_t *p = map_find_iter(&it);
+  while(p) {
+    msg_data_t msg = { .data = p->second };
+    if(msg.byte[0] == (0x90 | channel) &&
+       vec128b_bit_is_set(notes, msg.byte[1])) {
+      p->second = 0;
+    }
+    p = map_next(&it, p);
+  }
+}
+
 // TODO this is too long
 DTASK(record, struct { map_t events; vec128b notes[BEATS][16]; struct { int shift, first_beat, first_note; } copy; vec128b extra[16]; unsigned int active; }) {
   unsigned int beat = DREF_PASS(beat)->then;
@@ -283,12 +302,12 @@ DTASK(record, struct { map_t events; vec128b notes[BEATS][16]; struct { int shif
               goto found_start;
             }
           }
-          start = (start + 1) % BEATS;
+          start = MOD_INC(start, BEATS, 1);
         }
       found_start:
         record->copy.first_beat = start;
       }
-      record->copy.shift = (beat + BEATS - record->copy.first_beat + 1) % BEATS;
+      record->copy.shift = MOD_DEC(beat, BEATS, record->copy.first_beat - 1);
     } else {
       record->copy.shift = -1;
       record->copy.first_note = -1;
@@ -330,32 +349,31 @@ DTASK(record, struct { map_t events; vec128b notes[BEATS][16]; struct { int shif
   if(*DREF(deleting) &&
      !vec128b_zero(DREF(notes))) {
 
-    // for clearing tails later
+    // clear the tails from notes that will be deleted
     vec128b clear = *DREF(notes);
-    vec128b_and(&clear, &record->notes[(stop + BEATS - 1) % BEATS][channel]);
-
-    for(int i = start; i != stop; i = (i + 1) % BEATS) {
-      // notes
-      vec128b_and_not(&record->notes[i][channel], DREF(notes));
-
-      // events
-      map_iterator it = map_iterator_begin(record->events, i);
-      pair_t *p = map_find_iter(&it);
-      while(p) {
-        msg_data_t msg = { .data = p->second };
-        if(msg.byte[0] == (0x90 | channel) &&
-           vec128b_bit_is_set(DREF(notes), msg.byte[1])) {
-          p->second = 0;
-        }
-        p = map_next(&it, p);
-      }
-    }
-
-    // clear the tails from notes that have been deleted
-    for(int i = stop; !vec128b_zero(&clear); i = (i + 1) % BEATS) {
+    vec128b_and(&clear, &record->notes[MOD_DEC(stop, BEATS, 1)][channel]);
+    for(int i = stop;
+        !vec128b_zero(&clear);
+        i = MOD_INC(i, BEATS, 1)) {
       vec128b_and(&clear, &record->notes[i][channel]);
       vec128b_and_not(&record->notes[i][channel], &clear);
     }
+
+    // clear the heads from notes that will be deleted
+    clear = *DREF(notes);
+    vec128b_and(&clear, &record->notes[start][channel]);
+    for(int i = MOD_DEC(start, BEATS, 1);
+        !vec128b_zero(&clear);
+        i = MOD_DEC(i, BEATS, 1)) {
+      vec128b_and(&clear, &record->notes[i][channel]);
+      delete_notes(record, i, channel, &clear);
+    }
+
+    // delete the notes inside the period
+    for(int i = start; i != stop; i = MOD_INC(i, BEATS, 1)) {
+      delete_notes(record, i, channel, DREF(notes));
+    }
+
     return true;
   }
 
@@ -369,10 +387,10 @@ DTASK(record, struct { map_t events; vec128b notes[BEATS][16]; struct { int shif
     unsigned int disable = *DREF_PASS(disable_channel);
     bool change = false;
     // copy ahead one beat for playback
-    start = (start + 1) % BEATS;
-    stop = (stop + 1) % BEATS;
-    for(int i = start; i != stop; i = (i + 1) % BEATS) {
-      int src = (i + BEATS - record->copy.shift) % BEATS;
+    start = MOD_INC(start, BEATS, 1);
+    stop = MOD_INC(stop, BEATS, 1);
+    for(int i = start; i != stop; i = MOD_INC(i, BEATS, 1)) {
+      int src = MOD_DEC(i, BEATS, record->copy.shift);
 
       // events
       map_iterator it = map_iterator_begin(record->events, src);
@@ -471,7 +489,7 @@ DTASK(record, struct { map_t events; vec128b notes[BEATS][16]; struct { int shif
     int i = start;
     while(i != stop) {
       vec128b_or(&record->notes[i][channel], DREF(notes));
-      i = (i + 1) % BEATS;
+      i = MOD_INC(i, BEATS, 1);
     }
 
     // mark the channel active
