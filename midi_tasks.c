@@ -861,16 +861,16 @@ DTASK(show_program, bool) {
 }
 
 DTASK_ENABLE(channel) {
-  send_msg(0xb0, 46, 1);
-  send_msg(0xb0, 47, 1);
+  send_msg(0xb0, 44, 1);
+  send_msg(0xb0, 45, 1);
   *DREF(channel) = 0;
   printf_text(51, 1, "channel: %2d", *DREF(channel) + 1);
 }
 
 DTASK(channel, int) {
   const control_change_t *cc = DREF(control_change);
-  if(ONEOF(cc->control, 46, 47) && cc->value) {
-    *DREF(channel) = (*DREF(channel) + (cc->control == 47 ? 15 : 1)) % 16;
+  if(ONEOF(cc->control, 44, 45) && cc->value) {
+    *DREF(channel) = (*DREF(channel) + (cc->control == 44 ? 15 : 1)) % 16;
     printf_text(51, 1, "channel: %2d", *DREF(channel) + 1);
     return true;
   }
@@ -899,17 +899,17 @@ DTASK(disable_channel, unsigned int) {
 }
 
 DTASK_ENABLE(transpose) {
-  send_msg(0xb0, 44, 1);
-  send_msg(0xb0, 45, 1);
+  send_msg(0xb0, 46, 1);
+  send_msg(0xb0, 47, 1);
   *DREF(transpose) = 43;
   printf_text(51, 2, "octave: %1d", get_note_octave(*DREF(transpose) + 5));
 }
 
 DTASK(transpose, int8_t) {
   const control_change_t *cc = DREF(control_change);
-  if(ONEOF(cc->control, 44, 45) && cc->value) {
+  if(ONEOF(cc->control, 46, 47) && cc->value) {
     int8_t *off = DREF(transpose);
-    *off = clamp(-5, 79, (int)*off + (cc->control == 44 ? -12 : 12));
+    *off = clamp(-5, 79, (int)*off + (cc->control == 47 ? -12 : 12));
     printf_text(51, 2, "octave: %1d", get_note_octave(*off + 5)); // get octave of lowest C
     return true;
   }
