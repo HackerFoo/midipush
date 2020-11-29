@@ -358,16 +358,12 @@ unsigned int pad_to_note(unsigned int pad) {
   int
     x = pad & 7,
     y = pad >> 3,
-    block_row = y >> 2,
     block_column = x >> 2,
-    block_x = x & 3,
-    block_y = y & 3;
+    block_x = x & 3;
   return
-    block_row * 24 + // 24 semitones on each vertical half
-    block_column * 12 + // 12 in each quadrant
-    block_y * 3 + // vertical halves of blocks have an overlapping note
-    (block_column ? block_x : 3 - block_x) + // mirror across middle
-    (block_y > 1); // top half of block is shifted a semitone so that chords line up
+    block_column * 12 + // right side is an octave higher
+    (block_column ? 3 - block_x : block_x) + // mirror left and right halves
+    y * 3.5; // shift rows by alternating 3/4 semitones
 }
 
 void write_text(int x, int y, seg_t s) {
