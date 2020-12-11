@@ -23,6 +23,8 @@ connect_midi() {
     fi
 }
 
+mkdir -p record
+
 while true; do
     if connect_midi; then
         make

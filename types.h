@@ -29,4 +29,9 @@ typedef struct midi_msg {
 
 typedef struct timeval timeval_t;
 
+#define BEATS_PER_PAGE 24
+#define PAGES 64
+#define BEATS (BEATS_PER_PAGE * PAGES)
+#define BANKS 26
+
 #endif

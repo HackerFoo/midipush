@@ -2,3 +2,6 @@
 /midipush
 /.gen/
 *~
+/midipush.mid
+/midipush.state
+/record/

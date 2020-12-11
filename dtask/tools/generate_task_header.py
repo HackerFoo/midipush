@@ -189,7 +189,7 @@ def generate_header():
 
         # define id macros
         for (task, _) in tasks:
-            f.write('#define {} 0x{:x}\n'.format(task.upper(), dtask_bit(id)))
+            f.write('#define {} 0x{:x}ull\n'.format(task.upper(), dtask_bit(id)))
             f.write('#define {}_ID {:d}\n'.format(task.upper(), id))
             ids[task] = id
             id = id + 1

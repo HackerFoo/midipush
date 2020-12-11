@@ -30,11 +30,6 @@
 #include "midi_tasks.h"
 #endif
 
-#define BEATS_PER_PAGE 24
-#define PAGES 64
-#define BEATS (BEATS_PER_PAGE * PAGES)
-#define BANKS 26
-
 #define PAD_RED 5
 #define PAD_YELLOW 13
 #define PAD_GREEN 21
@@ -68,6 +63,10 @@ DTASK(tick, long long) {
   }
 }
 
+DTASK(external_tick, bool) {
+  return true;
+}
+
 unsigned int page_beat(unsigned int b, const set_page_t *p) {
   unsigned int current_page = b / BEATS_PER_PAGE;
   return ((current_page & p->keep) | p->val) * BEATS_PER_PAGE;
@@ -75,8 +74,9 @@ unsigned int page_beat(unsigned int b, const set_page_t *p) {
 
 DTASK(beat, struct { unsigned int then, now; }) {
   DREF(beat)->then = DREF(beat)->now;
-  if((state->events & TICK) && *DREF(playing)) {
-    (void)*DREF(tick);
+  if((state->events & (TICK | EXTERNAL_TICK)) && *DREF(playing)) {
+    (void)DREF(tick);
+    (void)DREF(external_tick);
     DREF(beat)->now = MOD_INC(DREF(beat)->then, BEATS, 1);
   }
   if(state->events & SHUTTLE) {
@@ -602,6 +602,26 @@ DTASK(playback, struct { vec128b played[16]; }) {
   bool changed = false;
 
   if(*DREF(playing)) {
+    // setup channels
+    if(state->events & PLAYING) {
+      COUNTDOWN(c, 16) {
+        write_synth((seg_t) { // bank LSB
+            .n = 3,
+            .s = (char [3]) { 0xb0 | c, 32,
+              DREF_PASS(program)->bank[c] }
+          });
+        write_synth((seg_t) { // program
+            .n = 2,
+            .s = (char [2]) { 0xc0 | c,
+              DREF_PASS(program)->program[c] }
+          });
+        write_synth((seg_t) { // volume
+            .n = 3,
+            .s = (char [3]) { 0xb0 | c, 7,
+              DREF_PASS(volume)->arr[c] }
+          });
+      }
+    }
     map_iterator it = map_iterator_begin(DREF(record)->events, beat);
     pair_t *p = map_find_iter(&it);
     while(p) {
@@ -636,6 +656,11 @@ DTASK(playback, struct { vec128b played[16]; }) {
           changed = true;
         }
       }
+    }
+  } else if(state->events & PLAYING) {
+    // clear notes
+    COUNTDOWN(c, 16) {
+      all_notes_off(c);
     }
   }
   return changed;
@@ -736,37 +761,10 @@ DTASK_ENABLE(playing) {
 
 DTASK(playing, bool) {
   const control_change_t *cc = DREF(control_change);
+  if(!(state->events & CONTROL_CHANGE)) return true; // allow external triggering
   if(cc->control == 85 && cc->value) {
     *DREF(playing) = !*DREF(playing);
     send_msg(0xb0, 85, *DREF(playing) ? 1 : 2);
-    if(*DREF(playing)) { // send programs on play
-      COUNTDOWN(c, 16) {
-        write_synth((seg_t) { // bank LSB
-            .n = 3,
-            .s = (char [3]) { 0xb0 | c, 32,
-              DREF_PASS(program)->bank[c] }
-          });
-        write_synth((seg_t) { // program
-            .n = 2,
-            .s = (char [2]) { 0xc0 | c,
-              DREF_PASS(program)->program[c] }
-          });
-        write_synth((seg_t) { // volume
-            .n = 3,
-            .s = (char [3]) { 0xb0 | c, 7,
-              DREF_PASS(volume)->arr[c] }
-          });
-      }
-    } else {
-      COUNTDOWN(c, 16) {
-        all_notes_off(c);
-        write_synth((seg_t) { // volume
-            .n = 3,
-            .s = (char [3]) { 0xb0 | c, 7,
-              DREF_PASS(volume)->arr[c] }
-          });
-      }
-    }
     return true;
   }
   return false;
@@ -924,6 +922,19 @@ DTASK(poweroff, bool) {
   const control_change_t *cc = DREF(control_change);
   if(cc->control == 3 && cc->value) {
     *DREF(poweroff) = true;
+    return true;
+  }
+  return false;
+}
+
+DTASK_ENABLE(save) {
+  send_msg(0xb0, 53, 1);
+}
+
+DTASK(save, bool) {
+  const control_change_t *cc = DREF(control_change);
+  if(cc->control == 53 && cc->value) {
+    *DREF(save) = true;
     return true;
   }
   return false;
