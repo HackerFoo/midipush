@@ -4,6 +4,7 @@ set -euo pipefail
 
 VIRTUAL_NAME="Virtual Raw"
 SYNTH_NAME="Waldorf Kyra"
+ADAPTER_NAME="UM-1"
 
 sudo modprobe snd_virmidi
 
@@ -14,9 +15,11 @@ get_midi_port() {
 connect_midi() {
     virtual=$(get_midi_port "${VIRTUAL_NAME}")
     synth=$(get_midi_port "${SYNTH_NAME}")
+    adapter=$(get_midi_port "${ADAPTER_NAME}")
     if [ -n "$virtual" ] && [ -n "$synth" ]; then
         aconnect -x
 	aconnect ${virtual} ${synth}
+        aconnect ${adapter} $((${virtual} + 1)) || true # don't fail
         return 0
     else
         return -1
