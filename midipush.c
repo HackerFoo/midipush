@@ -382,7 +382,7 @@ unsigned int pad_to_note(unsigned int pad) {
     block_x = x & 3;
   return
     block_column * 12 + // right side is an octave higher
-    (block_column ? 3 - block_x : block_x) + // mirror left and right halves
+    block_x +
     y * 3.5; // shift rows by alternating 3/4 semitones
 }
 
