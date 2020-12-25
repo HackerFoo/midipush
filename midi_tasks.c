@@ -25,6 +25,7 @@
 #include "startle/types.h"
 #include "startle/macros.h"
 #include "startle/map.h"
+#include "startle/support.h"
 #include "midipush.h"
 #include "vec128b.h"
 #include "midi_tasks.h"
@@ -78,6 +79,13 @@ DTASK(beat, struct { unsigned int then, now; }) {
     (void)DREF(tick);
     (void)DREF(external_tick);
     DREF(beat)->now = MOD_INC(DREF(beat)->then, BEATS, 1);
+    if(!(DREF(beat)->now % BEATS_PER_PAGE)) { // next page
+      int last_page = DREF(beat)->then / BEATS_PER_PAGE;
+      int next_page = inc_mask(last_page, *DREF(page_mask)) % PAGES;
+      if(MOD_INC(last_page, PAGES, 1) != next_page) {
+        DREF(beat)->then = DREF(beat)->now = next_page * BEATS_PER_PAGE;
+      }
+    }
   }
   if(state->events & SHUTTLE) {
     DREF(beat)->now = MOD_OFFSET(DREF(beat)->then, BEATS, *DREF(shuttle) * BEATS_PER_PAGE / 4);
@@ -935,6 +943,23 @@ DTASK(save, bool) {
   const control_change_t *cc = DREF(control_change);
   if(cc->control == 53 && cc->value) {
     *DREF(save) = true;
+    return true;
+  }
+  return false;
+}
+
+DTASK_ENABLE(page_mask) {
+  COUNTUP(i, 6) {
+    send_msg(0xb0, 36 + i, !!(*DREF(page_mask) & (1 << i)));
+  }
+}
+
+DTASK(page_mask, unsigned int) {
+  const control_change_t *cc = DREF(control_change);
+  if(INRANGE(cc->control, 36, 41) && cc->value) {
+    int bit = 1 << (cc->control - 36);
+    *DREF(page_mask) ^= bit;
+    send_msg(0xb0, cc->control, !!(*DREF(page_mask) & bit));
     return true;
   }
   return false;

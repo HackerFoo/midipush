@@ -1464,3 +1464,16 @@ int count_char(const char *str, char c) {
 TEST(count_char) {
   return count_char("banana", 'a') == 3 ? 0 : -1;
 }
+
+unsigned int inc_mask(unsigned int x, unsigned int mask) {
+  unsigned int next = (x | mask) + 1;
+  return (x & mask) | (next & ~mask);
+}
+
+TEST(inc_mask) {
+  unsigned int mask = 0xf0f0, start = 0x50a0;
+  for(unsigned int i = start; i < 0x10000; i = inc_mask(i, mask)) {
+    printf("0x%x\n", i);
+  }
+  return 0;
+}
