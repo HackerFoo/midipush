@@ -59,7 +59,8 @@ const unsigned long long initial =
   SHOW_VOLUME |
   SHOW_PLAYBACK |
   POWEROFF |
-  SAVE;
+  SAVE |
+  METRONOME;
 
 struct midi {
   snd_rawmidi_t *in, *out;

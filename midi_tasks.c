@@ -517,7 +517,7 @@ DTASK(passthrough, bool) {
 
   int channel = *DREF_PASS(channel);
   bool change = false;
-  if(state->events & CURRENT_NOTE) {
+  if(DTASK_AND(NOTES | CURRENT_NOTE)) {
     synth_note(channel,
                DREF(current_note)->id,
                DREF(current_note)->on,
@@ -961,6 +961,44 @@ DTASK(page_mask, unsigned int) {
     *DREF(page_mask) ^= bit;
     send_msg(0xb0, cc->control, !!(*DREF(page_mask) & bit));
     return true;
+  }
+  return false;
+}
+
+DTASK(set_metronome, struct { int channel, note; }) {
+  const control_change_t *cc = DREF(control_change);
+  set_metronome_t *m = DREF(set_metronome);
+  if(cc->control == 9 && cc->value) {
+    if(vec128b_zero(DREF_PASS(notes))) {
+      m->channel = -1;
+    } else {
+      // get lowest note
+      COUNTUP(n, 128) {
+        if(vec128b_bit_is_set(DREF_PASS(notes), n)) {
+          m->channel = *DREF_PASS(channel);
+          m->note = n;
+          break;
+        }
+      }
+    }
+    return true;
+  }
+  return false;
+}
+
+DTASK(metronome, bool) {
+  set_metronome_t *m = DREF(set_metronome);
+  if(m->channel >= 0) {
+    int t = DREF(beat)->now % BEATS_PER_PAGE;
+    if(t == 0) {
+      *DREF(metronome) = true;
+      synth_note(m->channel, m->note, true, 64);
+      return true;
+    } else if(*DREF(metronome) && t >= BEATS_PER_PAGE / 16) {
+      *DREF(metronome) = false;
+      synth_note(m->channel, m->note, false, 0);
+      return true;
+    }
   }
   return false;
 }
