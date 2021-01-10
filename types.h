@@ -18,6 +18,7 @@
 #ifndef __TYPES__
 #define __TYPES__
 #include <stdint.h>
+#include "delay.h"
 
 #define MAX_MIDI_DATA_LENGTH 32
 
@@ -33,5 +34,8 @@ typedef struct timeval timeval_t;
 #define PAGES 64
 #define BEATS (BEATS_PER_PAGE * PAGES)
 #define BANKS 26
+
+#define INFER_SCALE_HISTORY 7
+DECLARE_DELAY(int, INFER_SCALE_HISTORY);
 
 #endif

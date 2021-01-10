@@ -359,8 +359,7 @@ void all_notes_off(int channel) {
 }
 
 //                         C  #  D  #  E  F  #  G  #  A  #  B
-uint8_t background[12] = {45, 0, 2, 0, 2, 2, 0, 2, 0, 2, 0, 2};
-uint8_t background_offset = 0;
+uint8_t background[12] = {45, 0, 1, 0, 3, 1, 0, 3, 0, 1, 0, 1};
 const char note_name[24] = "C C#D D#E F F#G G#A A#B ";
 
 char *get_note_name(unsigned int note) {
@@ -371,8 +370,8 @@ int get_note_octave(unsigned int note) {
   return note / 12;
 }
 
-uint8_t background_color(unsigned int note) {
-  return background[(note + background_offset) % LENGTH(background)];
+uint8_t background_color(unsigned int note, unsigned int scale) {
+  return background[(12 + note - scale) % 12];
 }
 
 unsigned int pad_to_note(unsigned int pad) {

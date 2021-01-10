@@ -22,6 +22,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdarg.h>
+#include <limits.h>
 #include "startle/types.h"
 #include "startle/macros.h"
 #include "startle/map.h"
@@ -596,7 +597,7 @@ DTASK(set_page, struct { int val, set, keep, note; }) {
 
 DTASK_ENABLE(playback) {
   COUNTUP(i, 64) {
-    set_pad_color(i, background_color(pad_to_note(i) + *DREF(transpose)));
+    set_pad_color(i, background_color(pad_to_note(i) + *DREF(transpose), 0));
   }
 }
 
@@ -674,6 +675,16 @@ DTASK(playback, struct { vec128b played[16]; }) {
   return changed;
 }
 
+// TODO optimize
+int min_note(vec128b *v) {
+  COUNTUP(n, 128) {
+    if(vec128b_bit_is_set(v, n)) {
+      return n;
+    }
+  }
+  return -1;
+}
+
 DTASK(show_playback, struct { uint8_t pad_state[64]; }) {
   uint8_t *pad_state = DREF(show_playback)->pad_state;
   unsigned int beat = DREF(beat)->now;
@@ -694,15 +705,15 @@ DTASK(show_playback, struct { uint8_t pad_state[64]; }) {
   if(!(disable & 1u << channel)) {
     vec128b_or(&notes[channel], DREF(notes));
   }
-  bool first = true;
-  bool changed = false;
 
+  int scale = DREF(infer_scale)->scale;
+  bool changed = false;
   COUNTUP(i, 64) {
     uint64_t bit = 1ull << i;
     int note = pad_to_note(i) + *DREF(transpose);
     int color = 0;
     if(INRANGE(note, 0, 127)) {
-      color = background_color(note);
+      color = background_color(note, scale);
       if(vec128b_bit_is_set(&all_notes, note)) {
         color = PAD_YELLOW;
         if(vec128b_bit_is_set(&notes[channel], note)) {
@@ -711,13 +722,6 @@ DTASK(show_playback, struct { uint8_t pad_state[64]; }) {
       }
       if(pads & bit) {
         color = PAD_GREEN;
-        if(first) { // show first pressed note
-          printf_text(0, 0, "note: %.2s, octave: %1d, number: %3d",
-                      get_note_name(note),
-                      get_note_octave(note),
-                      note);
-          first = false;
-        }
       }
     }
     if(pad_state[i] != color) {
@@ -726,6 +730,14 @@ DTASK(show_playback, struct { uint8_t pad_state[64]; }) {
       changed = true;
     }
   }
+  int base_note = min_note(DREF(notes));
+  if(base_note >= 0) { // show base note
+    printf_text(0, 0, "note: %.2s, octave: %1d, number: %3d",
+                get_note_name(base_note),
+                get_note_octave(base_note),
+                base_note);
+  }
+  printf_text(0, 1, "scale: %.2s", get_note_name(scale));
   return changed;
 }
 
@@ -972,13 +984,10 @@ DTASK(set_metronome, struct { int channel, note; }) {
     if(vec128b_zero(DREF_PASS(notes))) {
       m->channel = -1;
     } else {
-      // get lowest note
-      COUNTUP(n, 128) {
-        if(vec128b_bit_is_set(DREF_PASS(notes), n)) {
+      int n = min_note(DREF_PASS(notes));
+      if(n >= 0) {
           m->channel = *DREF_PASS(channel);
           m->note = n;
-          break;
-        }
       }
     }
     return true;
@@ -999,6 +1008,64 @@ DTASK(metronome, bool) {
       synth_note(m->channel, m->note, false, 0);
       return true;
     }
+  }
+  return false;
+}
+
+DTASK_ENABLE(infer_scale) {
+  int empty = -1;
+  DELAY_FILL(&DREF(infer_scale)->note, int, INFER_SCALE_HISTORY, &empty);
+}
+
+DTASK(infer_scale, struct { DELAY(int, INFER_SCALE_HISTORY) note; int scale; }) {
+  const current_note_t *note = DREF(current_note);
+  if(*DREF(infer_scale_enabled) && note->on) {
+    const int prev_scale = DREF(infer_scale)->scale;
+    int id = note->id;
+    DELAY_WRITE(&DREF(infer_scale)->note, int, INFER_SCALE_HISTORY, &id);
+    int c[12] = {0};
+    c[id % 12] += 1;
+    static const int8_t f[12] = { // convolution filter for major chord
+       6, -2,  2, -2,
+       4,  2, -2,  6,
+      -2,  2, -2,  2
+    };
+    COUNTUP(i, INFER_SCALE_HISTORY) {
+      int n = *DELAY_READ(&DREF(infer_scale)->note, int, INFER_SCALE_HISTORY, i);
+      if(n >= 0) {
+        int s = n % 12;
+        COUNTUP(j, 12) {
+          c[j] += f[(12 + s - j) % 12];
+        }
+      }
+      c[prev_scale]++; // bias torwards previous scale
+    }
+    int c_max = INT_MIN, c_i = 0;
+    COUNTUP(i, 12) {
+      if(c[i] > c_max) {
+        c_max = c[i];
+        c_i = i;
+      }
+    }
+    if(DREF(infer_scale)->scale != c_i) {
+      DREF(infer_scale)->scale = c_i;
+      return true;
+    }
+  }
+  return false;
+}
+
+DTASK_ENABLE(infer_scale_enabled) {
+  *DREF(infer_scale_enabled) = true;
+  send_msg(0xb0, 58, 4);
+}
+
+DTASK(infer_scale_enabled, bool) {
+  const control_change_t *cc = DREF(control_change);
+  if(cc->control == 58 && cc->value) {
+    *DREF(infer_scale_enabled) = !*DREF(infer_scale_enabled);
+    send_msg(0xb0, 58, *DREF(infer_scale_enabled) ? 4 : 0);
+    return true;
   }
   return false;
 }
