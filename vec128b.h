@@ -150,7 +150,7 @@ void vec128b_set_zero(vec128b *a) {
 }
 
 static inline
-bool vec128b_bit_is_set(vec128b *a, int b) {
+bool vec128b_bit_is_set(const vec128b *a, int b) {
   const int n = b / WORD_BITS;
   const int bit = b - n * WORD_BITS;
   return !!(a->word[n] & (1u << bit));

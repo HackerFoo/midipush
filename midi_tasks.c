@@ -207,7 +207,7 @@ DTASK(current_note, struct { bool on; uint8_t id, velocity; }) {
     }
   }
   if(state->events & EXTERNAL_KEY) {
-    const pad_t *key = DREF(external_key);
+    const pad_t *key = (const pad_t *)DREF(external_key);
     *DREF(current_note) = (current_note_t) {
       .on = key->pressed,
       .id = key->id,
@@ -218,16 +218,29 @@ DTASK(current_note, struct { bool on; uint8_t id, velocity; }) {
   return false;
 }
 
-DTASK(notes, vec128b) {
+DTASK_ENABLE(notes) {
+  vec128b_set_zero(&DREF(notes)->v);
+  DREF(notes)->cnt = 0;
+}
+
+DTASK(notes, struct { vec128b v; int cnt; }) {
   (void)DREF(transpose);
+  bool changed = false;
   const current_note_t *note = DREF(current_note);
-  vec128b prev = *DREF(notes);
+  vec128b prev = DREF(notes)->v;
   if(state->events & TRANSPOSE) {
-    vec128b_set_zero(DREF(notes));
+    vec128b_set_zero(&DREF(notes)->v);
   } else {
-    vec128b_set_bit_val(DREF(notes), note->id, note->on);
+    vec128b_set_bit_val(&DREF(notes)->v, note->id, note->on);
   }
-  return !vec128b_eq(DREF(notes), &prev);
+  if(!vec128b_eq(&DREF(notes)->v, &prev)) {
+    DREF(notes)->cnt += note->on ? 1 : -1;
+    changed = true;
+  }
+  if(vec128b_zero(&DREF(notes)->v)) {
+    DREF(notes)->cnt = 0;
+  }
+  return changed;
 }
 
 DTASK_ENABLE(deleting) {
@@ -356,10 +369,10 @@ DTASK(record, struct { map_t events; vec128b notes[BEATS][16]; struct { int shif
   }
 
   if(*DREF(deleting) &&
-     !vec128b_zero(DREF(notes))) {
+     DREF(notes)->cnt != 0) {
 
     // clear the tails from notes that will be deleted
-    vec128b clear = *DREF(notes);
+    vec128b clear = DREF(notes)->v;
     vec128b_and(&clear, &record->notes[MOD_DEC(stop, BEATS, 1)][channel]);
     for(int i = stop;
         !vec128b_zero(&clear);
@@ -369,7 +382,7 @@ DTASK(record, struct { map_t events; vec128b notes[BEATS][16]; struct { int shif
     }
 
     // clear the heads from notes that will be deleted
-    clear = *DREF(notes);
+    clear = DREF(notes)->v;
     vec128b_and(&clear, &record->notes[start][channel]);
     for(int i = MOD_DEC(start, BEATS, 1);
         !vec128b_zero(&clear);
@@ -380,7 +393,7 @@ DTASK(record, struct { map_t events; vec128b notes[BEATS][16]; struct { int shif
 
     // delete the notes inside the period
     for(int i = start; i != stop; i = MOD_INC(i, BEATS, 1)) {
-      delete_notes(record, i, channel, DREF(notes));
+      delete_notes(record, i, channel, &DREF(notes)->v);
     }
 
     return true;
@@ -497,7 +510,7 @@ DTASK(record, struct { map_t events; vec128b notes[BEATS][16]; struct { int shif
     // notes
     int i = start;
     while(i != stop) {
-      vec128b_or(&record->notes[i][channel], DREF(notes));
+      vec128b_or(&record->notes[i][channel], &DREF(notes)->v);
       i = MOD_INC(i, BEATS, 1);
     }
 
@@ -595,12 +608,6 @@ DTASK(set_page, struct { int val, set, keep, note; }) {
   return false;
 }
 
-DTASK_ENABLE(playback) {
-  COUNTUP(i, 64) {
-    set_pad_color(i, background_color(pad_to_note(i) + *DREF(transpose), 0));
-  }
-}
-
 DTASK(playback, struct { vec128b played[16]; }) {
   vec128b *played = DREF(playback)->played;
   unsigned int beat = DREF(beat)->now;
@@ -655,7 +662,7 @@ DTASK(playback, struct { vec128b played[16]; }) {
       }
       vec128b pressed = notes[c];
       vec128b_or(&pressed, &extra[c]);
-      if(c == channel) vec128b_or(&pressed, DREF(notes));
+      if(c == channel) vec128b_or(&pressed, &DREF(notes)->v);
       vec128b released = played[c];
       vec128b_and_not(&released, &pressed);
       COUNTUP(i, 128) {
@@ -685,6 +692,14 @@ int min_note(vec128b *v) {
   return -1;
 }
 
+DTASK_ENABLE(show_playback) {
+  COUNTUP(i, 64) {
+    int c = background_color(pad_to_note(i) + *DREF(transpose), DREF(infer_scale)->scale);
+    DREF(show_playback)->pad_state[i] = c;
+    set_pad_color(i, c);
+  }
+}
+
 DTASK(show_playback, struct { uint8_t pad_state[64]; }) {
   uint8_t *pad_state = DREF(show_playback)->pad_state;
   unsigned int beat = DREF(beat)->now;
@@ -693,7 +708,7 @@ DTASK(show_playback, struct { uint8_t pad_state[64]; }) {
   unsigned int disable = *DREF(disable_channel);
   uint64_t pads = *DREF(pads);
   vec128b notes[16];
-  vec128b all_notes = *DREF(notes);
+  vec128b all_notes = DREF(notes)->v;
 
   COUNTUP(c, 16) {
     notes[c] = DREF(record)->notes[beat][c];
@@ -703,7 +718,7 @@ DTASK(show_playback, struct { uint8_t pad_state[64]; }) {
     }
   }
   if(!(disable & 1u << channel)) {
-    vec128b_or(&notes[channel], DREF(notes));
+    vec128b_or(&notes[channel], &DREF(notes)->v);
   }
 
   int scale = DREF(infer_scale)->scale;
@@ -730,7 +745,7 @@ DTASK(show_playback, struct { uint8_t pad_state[64]; }) {
       changed = true;
     }
   }
-  int base_note = min_note(DREF(notes));
+  int base_note = min_note(&DREF(notes)->v);
   if(base_note >= 0) { // show base note
     printf_text(0, 0, "note: %.2s, octave: %1d, number: %3d",
                 get_note_name(base_note),
@@ -981,10 +996,10 @@ DTASK(set_metronome, struct { int channel, note; }) {
   const control_change_t *cc = DREF(control_change);
   set_metronome_t *m = DREF(set_metronome);
   if(cc->control == 9 && cc->value) {
-    if(vec128b_zero(DREF_PASS(notes))) {
+    if(DREF_PASS(notes)->cnt == 0) {
       m->channel = -1;
     } else {
-      int n = min_note(DREF_PASS(notes));
+      int n = min_note(&DREF_PASS(notes)->v);
       if(n >= 0) {
           m->channel = *DREF_PASS(channel);
           m->note = n;
@@ -1017,42 +1032,63 @@ DTASK_ENABLE(infer_scale) {
   DELAY_FILL(&DREF(infer_scale)->note, int, INFER_SCALE_HISTORY, &empty);
 }
 
+// Switch as fast as possible, especially on chords
+// Handle seventh chords and playing in scale (reasonably)
+// Pressing 0/4/7 repeatedly doesn't change scale
+// Minor scale selects the corresponding majpr scale
 DTASK(infer_scale, struct { DELAY(int, INFER_SCALE_HISTORY) note; int scale; }) {
+  // simple fixed point representation
+#define F(x) (4*(x))
+  static const int8_t f[12] = { // convolution filter in fixed point
+     F(2.5),   F(-1),  F(1), F(-1),
+    F(2.25),    F(1), F(-1),  F(2),
+      F(-1), F(1.25), F(-1),  F(1)
+  };
+  static const int8_t f_chord = F(6.75); // f[0] + f[4] + f[7], a major chord
   const current_note_t *note = DREF(current_note);
-  if(*DREF(infer_scale_enabled) && note->on) {
+  if((state->events & CURRENT_NOTE) &&
+     *DREF(infer_scale_enabled) &&
+     note->on) {
     const int prev_scale = DREF(infer_scale)->scale;
     int id = note->id;
     DELAY_WRITE(&DREF(infer_scale)->note, int, INFER_SCALE_HISTORY, &id);
     int c[12] = {0};
-    c[id % 12] += 1;
-    static const int8_t f[12] = { // convolution filter for major chord
-       6, -2,  2, -2,
-       4,  2, -2,  6,
-      -2,  2, -2,  2
-    };
-    COUNTUP(i, INFER_SCALE_HISTORY) {
+    int cnt = 0;
+    int h = DREF(notes)->cnt > 2 ? DREF(notes)->cnt : INFER_SCALE_HISTORY;
+    int set = 0;
+    for(int i = 0; i < h; i++) {
       int n = *DELAY_READ(&DREF(infer_scale)->note, int, INFER_SCALE_HISTORY, i);
-      if(n >= 0) {
-        int s = n % 12;
+      if(n <= 0) break;
+      int s = n % 12;
+      int bit = 1 << s;
+      if(!(set & bit)) {
+        cnt++;
+        set |= bit;
         COUNTUP(j, 12) {
           c[j] += f[(12 + s - j) % 12];
+          if(cnt == 3 && c[j] >= f_chord) {
+            h = i; // matched a chord, finish
+          }
         }
       }
-      c[prev_scale]++; // bias torwards previous scale
     }
-    int c_max = INT_MIN, c_i = 0;
+
+    // bias towards previous scale
+    c[prev_scale] += cnt * F(0.5); // cnt * (f[0] - f[4]), so that repeated 4 or 7 won't switch
+    int c_max = c[prev_scale], c_i = prev_scale;
     COUNTUP(i, 12) {
       if(c[i] > c_max) {
         c_max = c[i];
         c_i = i;
       }
     }
-    if(DREF(infer_scale)->scale != c_i) {
+    if(prev_scale != c_i) {
       DREF(infer_scale)->scale = c_i;
       return true;
     }
   }
   return false;
+#undef F
 }
 
 DTASK_ENABLE(infer_scale_enabled) {
@@ -1064,7 +1100,7 @@ DTASK(infer_scale_enabled, bool) {
   const control_change_t *cc = DREF(control_change);
   if(cc->control == 58 && cc->value) {
     *DREF(infer_scale_enabled) = !*DREF(infer_scale_enabled);
-    send_msg(0xb0, 58, *DREF(infer_scale_enabled) ? 4 : 0);
+    send_msg(0xb0, 58, *DREF(infer_scale_enabled) ? 4 : 2);
     return true;
   }
   return false;

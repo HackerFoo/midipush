@@ -358,8 +358,8 @@ void all_notes_off(int channel) {
   });
 }
 
-//                         C  #  D  #  E  F  #  G  #  A  #  B
-uint8_t background[12] = {45, 0, 1, 0, 3, 1, 0, 3, 0, 1, 0, 1};
+//                         C  #  D  #  E  F  #  G  #   A  #  B
+uint8_t background[12] = {45, 0, 1, 0, 3, 1, 0, 3, 0, 96, 0, 1};
 const char note_name[24] = "C C#D D#E F F#G G#A A#B ";
 
 char *get_note_name(unsigned int note) {

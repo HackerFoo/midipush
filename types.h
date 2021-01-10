@@ -36,6 +36,6 @@ typedef struct timeval timeval_t;
 #define BANKS 26
 
 #define INFER_SCALE_HISTORY 7
-DECLARE_DELAY(int, INFER_SCALE_HISTORY);
+DECLARE_DELAY(int, INFER_SCALE_HISTORY)
 
 #endif
