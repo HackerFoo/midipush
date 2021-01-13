@@ -115,17 +115,16 @@ void set_bit(uint64_t *s, int k, bool v) {
   }
 }
 
-DTASK(pad, struct { bool pressed; uint8_t id, velocity; }) {
+DTASK(pad, key_event_t) {
   if(DREF(midi_in)->id != 0) return false;
   const seg_t *msg_in = &DREF(midi_in)->msg;
   unsigned char control = msg_in->s[0] & 0xf0;
   if(ONEOF(control, 0x80, 0x90)) {
     int p = msg_in->s[1] - 36;
     if(INRANGE(p, 0, 63)) {
-      *DREF(pad) = (pad_t) {
-        .pressed = control == 0x90,
+      *DREF(pad) = (key_event_t) {
         .id = p,
-        .velocity = msg_in->s[2]
+        .velocity = (control == 0x90 ? 1 : -1) * (int16_t)msg_in->s[2]
       };
       return true;
     }
@@ -133,15 +132,14 @@ DTASK(pad, struct { bool pressed; uint8_t id, velocity; }) {
   return false;
 }
 
-DTASK(external_key, struct { bool pressed; uint8_t id, velocity; }) {
+DTASK(external_key, key_event_t) {
   if(DREF(midi_in)->id == 0) return false;
   const seg_t *msg_in = &DREF(midi_in)->msg;
   unsigned char control = msg_in->s[0] & 0xf0;
   if(ONEOF(control, 0x80, 0x90)) {
     *DREF(external_key) = (external_key_t) {
-      .pressed = control == 0x90,
       .id = msg_in->s[1],
-      .velocity = msg_in->s[2]
+      .velocity = (control == 0x90 ? 1 : -1) * (int16_t)msg_in->s[2]
     };
     return true;
   }
@@ -188,31 +186,36 @@ DTASK(pads, uint64_t) {
   if(*DREF(new_button)) {
     *DREF(pads) = 0;
   } else {
-    set_bit(DREF(pads), pad->id, pad->pressed);
+    set_bit(DREF(pads), pad->id, pad->velocity > 0);
   }
   return *DREF(pads) != prev;
 }
 
-DTASK(current_note, struct { bool on; uint8_t id, velocity; }) {
+DTASK_ENABLE(current_note) {
+  key_event_t empty = { -1, 0 };
+  DELAY_FILL(DREF(current_note), key_event_t, HISTORY, &empty);
+}
+
+DTASK(current_note, struct { DELAY(key_event_t, HISTORY) e; }) {
   if(state->events & PAD) {
-    const pad_t *pad = DREF(pad);
+    const key_event_t *pad = DREF(pad);
     int id = pad_to_note(pad->id) + *DREF(transpose);
     if(INRANGE(id, 0, 127)) {
-      *DREF(current_note) = (current_note_t) {
-        .on = pad->pressed,
+      key_event_t e = {
         .id = pad_to_note(pad->id) + *DREF(transpose),
         .velocity = pad->velocity
       };
+      DELAY_WRITE(&DREF(current_note)->e, key_event_t, HISTORY, &e);
       return true;
     }
   }
   if(state->events & EXTERNAL_KEY) {
-    const pad_t *key = (const pad_t *)DREF(external_key);
-    *DREF(current_note) = (current_note_t) {
-      .on = key->pressed,
+    const key_event_t *key = DREF(external_key);
+    key_event_t e = {
       .id = key->id,
       .velocity = key->velocity
     };
+    DELAY_WRITE(&DREF(current_note)->e, key_event_t, HISTORY, &e);
     return true;
   }
   return false;
@@ -226,15 +229,15 @@ DTASK_ENABLE(notes) {
 DTASK(notes, struct { vec128b v; int cnt; }) {
   (void)DREF(transpose);
   bool changed = false;
-  const current_note_t *note = DREF(current_note);
+  const key_event_t *note = DELAY_READ(&DREF(current_note)->e, key_event_t, HISTORY, 0);
   vec128b prev = DREF(notes)->v;
   if(state->events & TRANSPOSE) {
     vec128b_set_zero(&DREF(notes)->v);
   } else {
-    vec128b_set_bit_val(&DREF(notes)->v, note->id, note->on);
+    vec128b_set_bit_val(&DREF(notes)->v, note->id, note->velocity > 0);
   }
   if(!vec128b_eq(&DREF(notes)->v, &prev)) {
-    DREF(notes)->cnt += note->on ? 1 : -1;
+    DREF(notes)->cnt += note->velocity > 0 ? 1 : -1;
     changed = true;
   }
   if(vec128b_zero(&DREF(notes)->v)) {
@@ -478,16 +481,18 @@ DTASK(record, struct { map_t events; vec128b notes[BEATS][16]; struct { int shif
   if(*DREF(recording)) {
     bool change = false;
     // events
-    if((state->events & CURRENT_NOTE) &&
-       DREF(current_note)->on &&
-       !vec128b_bit_is_set(&record->notes[beat][channel], DREF(current_note)->id)) {
-      msg_data_t msg = {{
-          0x90 | channel,
-          DREF(current_note)->id,
-          DREF(current_note)->velocity
-        }};
-      map_insert(record->events, PAIR(beat, msg.data));
-      change = true;
+    if(state->events & CURRENT_NOTE) {
+      const key_event_t *note = DELAY_READ(&DREF(current_note)->e, key_event_t, HISTORY, 0);
+      if(note->velocity > 0 &&
+         !vec128b_bit_is_set(&record->notes[beat][channel], note->id)) {
+        msg_data_t msg = {{
+            0x90 | channel,
+            note->id,
+            note->velocity
+          }};
+        map_insert(record->events, PAIR(beat, msg.data));
+        change = true;
+      }
     }
     if(state->events & CHANNEL_PRESSURE) {
       msg_data_t msg = {{
@@ -532,10 +537,11 @@ DTASK(passthrough, bool) {
   int channel = *DREF_PASS(channel);
   bool change = false;
   if(DTASK_AND(NOTES | CURRENT_NOTE)) {
+    const key_event_t *note = DELAY_READ(&DREF(current_note)->e, key_event_t, HISTORY, 0);
     synth_note(channel,
-               DREF(current_note)->id,
-               DREF(current_note)->on,
-               DREF(current_note)->velocity);
+               note->id,
+               note->velocity > 0,
+               abs(note->velocity));
     change = true;
   }
   if(state->events & CHANNEL_PRESSURE) {
@@ -592,15 +598,16 @@ DTASK(set_page, struct { int val, set, keep, note; }) {
     }
   }
   if(state->events & CURRENT_NOTE) {
-    if(DREF(current_note)->on) {
+    const key_event_t *note = DELAY_READ(&DREF(current_note)->e, key_event_t, HISTORY, 0);
+    if(note->velocity > 0) {
       if(p->set) {
         p->val &= p->set;
         p->keep = 0x38 & ~p->set; // subpage = 0 if not set
         p->set = 0;
-        p->note = DREF(current_note)->id;
+        p->note = note->id;
         return true;
       } else if(p->note >= 0) {
-        p->note = DREF(current_note)->id;
+        p->note = note->id;
         return true;
       }
     }
@@ -694,7 +701,7 @@ int min_note(vec128b *v) {
 
 DTASK_ENABLE(show_playback) {
   COUNTUP(i, 64) {
-    int c = background_color(pad_to_note(i) + *DREF(transpose), DREF(infer_scale)->scale);
+    int c = background_color(pad_to_note(i) + *DREF(transpose), *DREF(infer_scale));
     DREF(show_playback)->pad_state[i] = c;
     set_pad_color(i, c);
   }
@@ -721,7 +728,7 @@ DTASK(show_playback, struct { uint8_t pad_state[64]; }) {
     vec128b_or(&notes[channel], &DREF(notes)->v);
   }
 
-  int scale = DREF(infer_scale)->scale;
+  int scale = *DREF(infer_scale);
   bool changed = false;
   COUNTUP(i, 64) {
     uint64_t bit = 1ull << i;
@@ -992,6 +999,10 @@ DTASK(page_mask, unsigned int) {
   return false;
 }
 
+DTASK_ENABLE(set_metronome) {
+  DREF(set_metronome)->channel = -1;
+}
+
 DTASK(set_metronome, struct { int channel, note; }) {
   const control_change_t *cc = DREF(control_change);
   set_metronome_t *m = DREF(set_metronome);
@@ -1012,7 +1023,7 @@ DTASK(set_metronome, struct { int channel, note; }) {
 
 DTASK(metronome, bool) {
   set_metronome_t *m = DREF(set_metronome);
-  if(m->channel >= 0) {
+  if(m->channel >= 0 && *DREF(playing)) {
     int t = DREF(beat)->now % BEATS_PER_PAGE;
     if(t == 0) {
       *DREF(metronome) = true;
@@ -1028,15 +1039,14 @@ DTASK(metronome, bool) {
 }
 
 DTASK_ENABLE(infer_scale) {
-  int empty = -1;
-  DELAY_FILL(&DREF(infer_scale)->note, int, INFER_SCALE_HISTORY, &empty);
+  *DREF(infer_scale) = 0;
 }
 
 // Switch as fast as possible, especially on chords
 // Handle seventh chords and playing in scale (reasonably)
 // Pressing 0/4/7 repeatedly doesn't change scale
 // Minor scale selects the corresponding majpr scale
-DTASK(infer_scale, struct { DELAY(int, INFER_SCALE_HISTORY) note; int scale; }) {
+DTASK(infer_scale, int) {
   // simple fixed point representation
 #define F(x) (4*(x))
   static const int8_t f[12] = { // convolution filter in fixed point
@@ -1045,31 +1055,30 @@ DTASK(infer_scale, struct { DELAY(int, INFER_SCALE_HISTORY) note; int scale; }) 
       F(-1), F(1.25), F(-1),  F(1)
   };
   static const int8_t f_chord = F(6.75); // f[0] + f[4] + f[7], a major chord
-  const current_note_t *note = DREF(current_note);
   if((state->events & CURRENT_NOTE) &&
      *DREF(infer_scale_enabled) &&
-     note->on) {
-    const int prev_scale = DREF(infer_scale)->scale;
-    int id = note->id;
-    DELAY_WRITE(&DREF(infer_scale)->note, int, INFER_SCALE_HISTORY, &id);
+      DELAY_READ(&DREF(current_note)->e, key_event_t, HISTORY, 0)->velocity > 0) {
+    const int prev_scale = *DREF(infer_scale);
     int c[12] = {0};
     int cnt = 0;
-    int h = DREF(notes)->cnt > 2 ? DREF(notes)->cnt : INFER_SCALE_HISTORY;
     int set = 0;
-    for(int i = 0; i < h; i++) {
-      int n = *DELAY_READ(&DREF(infer_scale)->note, int, INFER_SCALE_HISTORY, i);
-      if(n <= 0) break;
-      int s = n % 12;
+    for(int i = 0; i < HISTORY && cnt < 7; i++) {
+      const key_event_t *e = DELAY_READ(&DREF(current_note)->e, key_event_t, HISTORY, i);
+      if(e->id <= 0) break;
+      if(e->velocity <= 0) continue;
+      int s = e->id % 12;
       int bit = 1 << s;
       if(!(set & bit)) {
         cnt++;
         set |= bit;
+        bool done = false;
         COUNTUP(j, 12) {
           c[j] += f[(12 + s - j) % 12];
           if(cnt == 3 && c[j] >= f_chord) {
-            h = i; // matched a chord, finish
+            done = true; // matched a chord, finish
           }
         }
+        if(done) break;
       }
     }
 
@@ -1083,7 +1092,7 @@ DTASK(infer_scale, struct { DELAY(int, INFER_SCALE_HISTORY) note; int scale; }) 
       }
     }
     if(prev_scale != c_i) {
-      DREF(infer_scale)->scale = c_i;
+      *DREF(infer_scale) = c_i;
       return true;
     }
   }

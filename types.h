@@ -35,7 +35,11 @@ typedef struct timeval timeval_t;
 #define BEATS (BEATS_PER_PAGE * PAGES)
 #define BANKS 26
 
-#define INFER_SCALE_HISTORY 7
-DECLARE_DELAY(int, INFER_SCALE_HISTORY)
+typedef struct key {
+  int16_t id, velocity;
+} key_event_t;
+
+#define HISTORY 16
+DECLARE_DELAY(key_event_t, HISTORY)
 
 #endif
