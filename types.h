@@ -36,7 +36,7 @@ typedef struct timeval timeval_t;
 #define BANKS 26
 
 typedef struct key {
-  int16_t id, velocity;
+  int16_t id, velocity, tick;
 } key_event_t;
 
 #define HISTORY 16

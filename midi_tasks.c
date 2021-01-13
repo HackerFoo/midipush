@@ -36,6 +36,8 @@
 #define PAD_YELLOW 13
 #define PAD_GREEN 21
 
+#define DEBOUNCE_MS 100
+
 #define MOD_INC(x, m, n) ((x + n) % m)
 #define MOD_DEC(x, m, n) ((x + m - n) % m)
 #define MOD_OFFSET(x, m, n) ((x + m + n) % m)
@@ -196,16 +198,27 @@ DTASK_ENABLE(current_note) {
   DELAY_FILL(DREF(current_note), key_event_t, HISTORY, &empty);
 }
 
-DTASK(current_note, struct { DELAY(key_event_t, HISTORY) e; }) {
+DTASK(current_note, DELAY(key_event_t, HISTORY)) {
   if(state->events & PAD) {
     const key_event_t *pad = DREF(pad);
     int id = pad_to_note(pad->id) + *DREF(transpose);
     if(INRANGE(id, 0, 127)) {
       key_event_t e = {
         .id = pad_to_note(pad->id) + *DREF(transpose),
-        .velocity = pad->velocity
+        .velocity = pad->velocity,
+        .tick = *DREF_PASS(tick)
       };
-      DELAY_WRITE(&DREF(current_note)->e, key_event_t, HISTORY, &e);
+
+      // pseudo debounce - pads can bounce with lesser velocity cancelling the previous note,
+      // so this takes the maximum of the two (assuming only two note ons)
+      const key_event_t *prev = DELAY_READ(DREF(current_note), key_event_t, HISTORY, 1);
+      if(e.velocity > 0 &&
+         prev->id == e.id &&
+         e.tick < prev->tick + DEBOUNCE_MS) {
+        e.velocity = max(e.velocity, prev->velocity);
+      }
+
+      DELAY_WRITE(DREF(current_note), key_event_t, HISTORY, &e);
       return true;
     }
   }
@@ -213,9 +226,10 @@ DTASK(current_note, struct { DELAY(key_event_t, HISTORY) e; }) {
     const key_event_t *key = DREF(external_key);
     key_event_t e = {
       .id = key->id,
-      .velocity = key->velocity
+      .velocity = key->velocity,
+      .tick = *DREF_PASS(tick)
     };
-    DELAY_WRITE(&DREF(current_note)->e, key_event_t, HISTORY, &e);
+    DELAY_WRITE(DREF(current_note), key_event_t, HISTORY, &e);
     return true;
   }
   return false;
@@ -229,7 +243,7 @@ DTASK_ENABLE(notes) {
 DTASK(notes, struct { vec128b v; int cnt; }) {
   (void)DREF(transpose);
   bool changed = false;
-  const key_event_t *note = DELAY_READ(&DREF(current_note)->e, key_event_t, HISTORY, 0);
+  const key_event_t *note = DELAY_READ(DREF(current_note), key_event_t, HISTORY, 0);
   vec128b prev = DREF(notes)->v;
   if(state->events & TRANSPOSE) {
     vec128b_set_zero(&DREF(notes)->v);
@@ -482,7 +496,7 @@ DTASK(record, struct { map_t events; vec128b notes[BEATS][16]; struct { int shif
     bool change = false;
     // events
     if(state->events & CURRENT_NOTE) {
-      const key_event_t *note = DELAY_READ(&DREF(current_note)->e, key_event_t, HISTORY, 0);
+      const key_event_t *note = DELAY_READ(DREF(current_note), key_event_t, HISTORY, 0);
       if(note->velocity > 0 &&
          !vec128b_bit_is_set(&record->notes[beat][channel], note->id)) {
         msg_data_t msg = {{
@@ -537,7 +551,7 @@ DTASK(passthrough, bool) {
   int channel = *DREF_PASS(channel);
   bool change = false;
   if(DTASK_AND(NOTES | CURRENT_NOTE)) {
-    const key_event_t *note = DELAY_READ(&DREF(current_note)->e, key_event_t, HISTORY, 0);
+    const key_event_t *note = DELAY_READ(DREF(current_note), key_event_t, HISTORY, 0);
     synth_note(channel,
                note->id,
                note->velocity > 0,
@@ -598,7 +612,7 @@ DTASK(set_page, struct { int val, set, keep, note; }) {
     }
   }
   if(state->events & CURRENT_NOTE) {
-    const key_event_t *note = DELAY_READ(&DREF(current_note)->e, key_event_t, HISTORY, 0);
+    const key_event_t *note = DELAY_READ(DREF(current_note), key_event_t, HISTORY, 0);
     if(note->velocity > 0) {
       if(p->set) {
         p->val &= p->set;
@@ -1057,13 +1071,13 @@ DTASK(infer_scale, int) {
   static const int8_t f_chord = F(6.75); // f[0] + f[4] + f[7], a major chord
   if((state->events & CURRENT_NOTE) &&
      *DREF(infer_scale_enabled) &&
-      DELAY_READ(&DREF(current_note)->e, key_event_t, HISTORY, 0)->velocity > 0) {
+      DELAY_READ(DREF(current_note), key_event_t, HISTORY, 0)->velocity > 0) {
     const int prev_scale = *DREF(infer_scale);
     int c[12] = {0};
     int cnt = 0;
     int set = 0;
     for(int i = 0; i < HISTORY && cnt < 7; i++) {
-      const key_event_t *e = DELAY_READ(&DREF(current_note)->e, key_event_t, HISTORY, i);
+      const key_event_t *e = DELAY_READ(DREF(current_note), key_event_t, HISTORY, i);
       if(e->id <= 0) break;
       if(e->velocity <= 0) continue;
       int s = e->id % 12;
