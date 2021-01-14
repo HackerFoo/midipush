@@ -768,7 +768,7 @@ DTASK(show_playback, struct { uint8_t pad_state[64]; }) {
   }
   int base_note = min_note(&DREF(notes)->v);
   if(base_note >= 0) { // show base note
-    printf_text(0, 0, "note: %.2s, octave: %1d, number: %3d",
+    printf_text(0, 0, "note: %.2s, octave: %2d, number: %3d",
                 get_note_name(base_note),
                 get_note_octave(base_note),
                 base_note);
@@ -952,19 +952,28 @@ DTASK(disable_channel, unsigned int) {
   return false;
 }
 
+#define ALIGNMENT_PADDING(x, m) ((m - x % m) % m)
+
+static void show_octave(int off) {
+  printf_text(51, 2, "octave: %1d%s", get_note_octave(off), off % 12 ? ".5" : "  ");
+}
+
 DTASK_ENABLE(transpose) {
   send_msg(0xb0, 46, 1);
   send_msg(0xb0, 47, 1);
   *DREF(transpose) = 43;
-  printf_text(51, 2, "octave: %1d", get_note_octave(*DREF(transpose) + 5));
+  show_octave(*DREF(transpose));
 }
+
+const int upper_limit = 128 - 40 + ALIGNMENT_PADDING(128 - 40, 12);
 
 DTASK(transpose, int8_t) {
   const control_change_t *cc = DREF(control_change);
   if(ONEOF(cc->control, 46, 47) && cc->value) {
     int8_t *off = DREF(transpose);
-    *off = clamp(-5, 79, (int)*off + (cc->control == 47 ? -12 : 12));
-    printf_text(51, 2, "octave: %1d", get_note_octave(*off + 5)); // get octave of lowest C
+    int step = *off % 12 ? 5 : 7;
+    *off = clamp(0, upper_limit, (int)*off + (cc->control == 47 ? step - 12 : step));
+    show_octave(*off);
     return true;
   }
   return false;
