@@ -35,12 +35,20 @@
 #define PAD_RED 5
 #define PAD_YELLOW 13
 #define PAD_GREEN 21
+#define PAD_PURPLE 53
 
 #define DEBOUNCE_MS 100
 
 #define MOD_INC(x, m, n) ((x + n) % m)
 #define MOD_DEC(x, m, n) ((x + m - n) % m)
 #define MOD_OFFSET(x, m, n) ((x + m + n) % m)
+
+enum infer_scale_mode {
+  INFER_SCALE_OFF = 0,
+  INFER_SCALE_ON,
+  INFER_SCALE_LOCK,
+  INFER_SCALE_MAX
+};
 
 static_assert(MIDI_TASKS_COUNT <= 64, "too many tasks");
 
@@ -498,7 +506,9 @@ DTASK(record, struct { map_t events; vec128b notes[BEATS][16]; struct { int shif
     if(state->events & CURRENT_NOTE) {
       const key_event_t *note = DELAY_READ(DREF(current_note), key_event_t, HISTORY, 0);
       if(note->velocity > 0 &&
-         !vec128b_bit_is_set(&record->notes[beat][channel], note->id)) {
+         !vec128b_bit_is_set(&record->notes[beat][channel], note->id) &&
+         (*DREF_PASS(infer_scale_mode) != INFER_SCALE_LOCK ||
+          in_key(*DREF_PASS(infer_scale), note->id))) {
         msg_data_t msg = {{
             0x90 | channel,
             note->id,
@@ -552,11 +562,14 @@ DTASK(passthrough, bool) {
   bool change = false;
   if(DTASK_AND(NOTES | CURRENT_NOTE)) {
     const key_event_t *note = DELAY_READ(DREF(current_note), key_event_t, HISTORY, 0);
-    synth_note(channel,
-               note->id,
-               note->velocity > 0,
-               abs(note->velocity));
-    change = true;
+    if(*DREF_PASS(infer_scale_mode) != INFER_SCALE_LOCK ||
+       in_key(*DREF_PASS(infer_scale), note->id)) {
+      synth_note(channel,
+                 note->id,
+                 note->velocity > 0,
+                 abs(note->velocity));
+      change = true;
+    }
   }
   if(state->events & CHANNEL_PRESSURE) {
     write_synth((seg_t) { .n = 2, .s = (char [2]) {
@@ -757,7 +770,7 @@ DTASK(show_playback, struct { uint8_t pad_state[64]; }) {
         }
       }
       if(pads & bit) {
-        color = PAD_GREEN;
+        color = in_key(*DREF(infer_scale), note) ? PAD_GREEN : PAD_PURPLE;
       }
     }
     if(pad_state[i] != color) {
@@ -1079,7 +1092,7 @@ DTASK(infer_scale, int) {
   };
   static const int8_t f_chord = F(6.75); // f[0] + f[4] + f[7], a major chord
   if((state->events & CURRENT_NOTE) &&
-     *DREF(infer_scale_enabled) &&
+     *DREF(infer_scale_mode) &&
       DELAY_READ(DREF(current_note), key_event_t, HISTORY, 0)->velocity > 0) {
     const int prev_scale = *DREF(infer_scale);
     int c[12] = {0};
@@ -1123,16 +1136,24 @@ DTASK(infer_scale, int) {
 #undef F
 }
 
-DTASK_ENABLE(infer_scale_enabled) {
-  *DREF(infer_scale_enabled) = true;
-  send_msg(0xb0, 58, 4);
+static
+void infer_scale_indicate(enum infer_scale_mode state) {
+  static const int t[INFER_SCALE_MAX] = {2, 4, 5};
+  if(state < INFER_SCALE_MAX) {
+    send_msg(0xb0, 58, t[state]);
+  }
+}
+  
+
+DTASK_ENABLE(infer_scale_mode) {
+  infer_scale_indicate(*DREF(infer_scale_mode) = INFER_SCALE_ON);
 }
 
-DTASK(infer_scale_enabled, bool) {
+DTASK(infer_scale_mode, int) {
   const control_change_t *cc = DREF(control_change);
   if(cc->control == 58 && cc->value) {
-    *DREF(infer_scale_enabled) = !*DREF(infer_scale_enabled);
-    send_msg(0xb0, 58, *DREF(infer_scale_enabled) ? 4 : 2);
+    *DREF(infer_scale_mode) = (*DREF(infer_scale_mode) + 1) % INFER_SCALE_MAX;
+    infer_scale_indicate(*DREF(infer_scale_mode));
     return true;
   }
   return false;
