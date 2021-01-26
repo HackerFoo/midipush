@@ -220,6 +220,7 @@ seg_t find_midi_msg(const char **s, const char *e) {
         *s = p + 1;
         return msg;
       }
+      p++;
     }
     return (seg_t) {0};
   } else {
