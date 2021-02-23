@@ -55,7 +55,7 @@ static_assert(MIDI_TASKS_COUNT <= 64, "too many tasks");
 DTASK_GROUP(midi_tasks)
 
 // passthrough
-DTASK(midi_in, struct { int id; seg_t msg; }) {
+DTASK(midi_in, struct { int id; unsigned char status; seg_t data; }) {
   return true;
 }
 
@@ -108,12 +108,14 @@ DTASK(beat, struct { unsigned int then, now; }) {
 }
 
 DTASK(print_midi_msg, bool) {
-  const seg_t *msg = &DREF(midi_in)->msg;
-  printf("%d > 0x%x:", DREF(midi_in)->id, (unsigned char)msg->s[0]);
-  RANGEUP(i, 1, msg->n) {
-    printf(" %d", (unsigned char)msg->s[i]);
+  const midi_in_t *msg = DREF(midi_in);
+  if(msg->status != 0xf8) {
+    printf("%d > 0x%x:", msg->id, msg->status);
+    COUNTUP(i, msg->data.n) {
+      printf(" %d", (unsigned char)msg->data.s[i]);
+    }
+    printf("\n");
   }
-  printf("\n");
   return true;
 }
 
@@ -126,15 +128,15 @@ void set_bit(uint64_t *s, int k, bool v) {
 }
 
 DTASK(pad, key_event_t) {
-  if(DREF(midi_in)->id != 0) return false;
-  const seg_t *msg_in = &DREF(midi_in)->msg;
-  unsigned char control = msg_in->s[0] & 0xf0;
+  const midi_in_t *msg = DREF(midi_in);
+  if(msg->id != 0) return false;
+  unsigned char control = msg->status & 0xf0;
   if(ONEOF(control, 0x80, 0x90)) {
-    int p = msg_in->s[1] - 36;
+    int p = msg->data.s[0] - 36;
     if(INRANGE(p, 0, 63)) {
       *DREF(pad) = (key_event_t) {
         .id = p,
-        .velocity = (control == 0x90 ? 1 : -1) * (int16_t)msg_in->s[2]
+        .velocity = (control == 0x90 ? 1 : -1) * (int16_t)msg->data.s[1]
       };
       return true;
     }
@@ -143,13 +145,13 @@ DTASK(pad, key_event_t) {
 }
 
 DTASK(external_key, key_event_t) {
-  if(DREF(midi_in)->id == 0) return false;
-  const seg_t *msg_in = &DREF(midi_in)->msg;
-  unsigned char control = msg_in->s[0] & 0xf0;
+  const midi_in_t *msg = DREF(midi_in);
+  if(msg->id == 0) return false;
+  unsigned char control = msg->status & 0xf0;
   if(ONEOF(control, 0x80, 0x90)) {
     *DREF(external_key) = (external_key_t) {
-      .id = msg_in->s[1],
-      .velocity = (control == 0x90 ? 1 : -1) * (int16_t)msg_in->s[2]
+      .id = msg->data.s[0],
+      .velocity = (control == 0x90 ? 1 : -1) * (int16_t)msg->data.s[1]
     };
     return true;
   }
@@ -157,34 +159,34 @@ DTASK(external_key, key_event_t) {
 }
 
 DTASK(channel_pressure, int) {
-  if(DREF(midi_in)->id != 0) return false;
-  const seg_t *msg_in = &DREF(midi_in)->msg;
-  unsigned char control = msg_in->s[0] & 0xf0;
+  const midi_in_t *msg = DREF(midi_in);
+  if(msg->id != 0) return false;
+  unsigned char control = msg->status & 0xf0;
   if(control == 0xd0) {
-    *DREF(channel_pressure) = msg_in->s[1];
+    *DREF(channel_pressure) = msg->data.s[0];
     return true;
   }
   return false;
 }
 
 DTASK(pitch_bend, int) {
-  if(DREF(midi_in)->id != 0) return false;
-  const seg_t *msg_in = &DREF(midi_in)->msg;
-  unsigned char control = msg_in->s[0] & 0xf0;
+  const midi_in_t *msg = DREF(midi_in);
+  if(msg->id != 0) return false;
+  unsigned char control = msg->status & 0xf0;
   if(control == 0xe0) {
-    *DREF(pitch_bend) = (msg_in->s[1] & 0x7f) | (((int)msg_in->s[2] & 0x7f) << 7) ;
+    *DREF(pitch_bend) = (msg->data.s[0] & 0x7f) | (((int)msg->data.s[1] & 0x7f) << 7) ;
     return true;
   }
   return false;
 }
 
 DTASK(control_change, struct { int control, value; } ) {
-  if(DREF(midi_in)->id != 0) return false;
-  const seg_t *msg_in = &DREF(midi_in)->msg;
-  unsigned char control = msg_in->s[0] & 0xf0;
+  const midi_in_t *msg = DREF(midi_in);
+  if(msg->id != 0) return false;
+  unsigned char control = msg->status & 0xf0;
   if(control == 0xb0) {
-    DREF(control_change)->control = msg_in->s[1];
-    DREF(control_change)->value = msg_in->s[2];
+    DREF(control_change)->control = msg->data.s[0];
+    DREF(control_change)->value = msg->data.s[1];
     return true;
   }
   return false;

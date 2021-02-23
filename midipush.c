@@ -182,7 +182,7 @@ STATIC_ALLOC_DEPENDENT(ext_rb, char, sizeof(ring_buffer_t) + static_sizeof(midi_
 int fixed_length(unsigned char c) {
   int
     l = (c >> 4) & 7, // left 3 bits
-    r = (c & 7); // right 4 bits
+    r = (c & 0x0f); // right 4 bits
 
   if(l != 7) {
     return (l & 6) == 4 ? 2 : 3; // channel voice messages
@@ -195,25 +195,26 @@ int fixed_length(unsigned char c) {
   }
 }
 
-seg_t find_midi_msg(const char **s, const char *e) {
-
-  // skip to first control byte
+seg_t find_midi_msg(unsigned char *status, const char **s, const char *e) {
   const char *p = *s;
-  while(p < e &&
-        !((unsigned char)*p & 0x80)) {
-    printf("* 0x%x\n", *p);
-    p++;
+  if(!*status) {
+    // skip to first control byte
+    while(p < e &&
+          !((unsigned char)*p & 0x80)) {
+      printf("* 0x%x\n", *p);
+      p++;
+    }
   }
   if(p == e) {
     *s = e;
     return (seg_t) {0};
   }
+  if((unsigned char)*p & 0x80) {
+    *status = *p++;
+  }
   seg_t msg = { .s = p, .n = 0 };
-
-  int len = fixed_length(*p);
+  int len = fixed_length(*status);
   if(len < 0) { // sysex
-    p++;
-    msg.n++;
     while(p < e) {
       msg.n++;
       if((unsigned char)*p == 0xf7) {
@@ -224,7 +225,7 @@ seg_t find_midi_msg(const char **s, const char *e) {
     }
     return (seg_t) {0};
   } else {
-    msg.n = len;
+    msg.n = len - 1;
   }
 
   if(e - p < msg.n) {
@@ -241,7 +242,6 @@ bool read_midi_msgs(struct midi *m, midi_tasks_state_t *state, dtask_set_t *even
   while(success) {
 
     // read from ring buffer first
-    midi_input_buffer[0] = m->last_status;
     char *buffer = midi_input_buffer + 1;
     size_t remaining = static_sizeof(midi_input_buffer) - 1;
     ssize_t n = rb_read(m->rb, buffer, remaining);
@@ -261,12 +261,12 @@ bool read_midi_msgs(struct midi *m, midi_tasks_state_t *state, dtask_set_t *even
     }
 
     const char *buffer_end = buffer + n;
-    if(!((unsigned char)buffer[0] & 0x80)) buffer--;
     seg_t msg;
-    while(msg = find_midi_msg(&buffer, buffer_end), msg.n) {
-      m->last_status = msg.s[0];
+    while(msg = find_midi_msg(&m->last_status, &buffer, buffer_end), msg.n) {
+      midi_state.midi_in.status = m->last_status;
+      if(!msg.n) m->last_status = 0; // ***
       midi_state.midi_in.id = m->id;
-      midi_state.midi_in.msg = msg;
+      midi_state.midi_in.data = msg;
       *events |= dtask_run((dtask_state_t *)state, MIDI_IN);
       if(midi_state.poweroff) {
         success = false;
