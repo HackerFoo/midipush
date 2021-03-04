@@ -1,4 +1,4 @@
-/* Copyright 2020-2020 Dustin DeWeese
+/* Copyright 2020-2021 Dustin DeWeese
    This file is part of MidiPush.
 
     MidiPush is free software: you can redistribute it and/or modify

@@ -1,4 +1,4 @@
-/* Copyright 2020-2020 Dustin DeWeese
+/* Copyright 2020-2021 Dustin DeWeese
    This file is part of MidiPush.
 
     MidiPush is free software: you can redistribute it and/or modify
@@ -1145,7 +1145,7 @@ void infer_scale_indicate(enum infer_scale_mode state) {
     send_msg(0xb0, 58, t[state]);
   }
 }
-  
+
 
 DTASK_ENABLE(infer_scale_mode) {
   infer_scale_indicate(*DREF(infer_scale_mode) = INFER_SCALE_ON);
