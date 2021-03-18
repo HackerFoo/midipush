@@ -262,7 +262,12 @@ bool read_midi_msgs(struct midi *m, midi_tasks_state_t *state, dtask_set_t *even
 
     const char *buffer_end = buffer + n;
     seg_t msg;
-    while(msg = find_midi_msg(&m->last_status, &buffer, buffer_end), msg.n) {
+    while(msg = find_midi_msg(&m->last_status, &buffer, buffer_end), msg.s) {
+#if DEBUG
+      printf("msg(%d, %02x)", m->id, m->last_status);
+      COUNTUP(i, msg.n) printf(" %02x", msg.s[i]);
+      printf("\n");
+#endif
       midi_state.midi_in.status = m->last_status;
       if(!msg.n) m->last_status = 0; // ***
       midi_state.midi_in.id = m->id;
@@ -382,13 +387,9 @@ bool in_key(unsigned int scale, unsigned int key) {
 unsigned int pad_to_note(unsigned int pad) {
   int
     x = pad & 7,
-    y = pad >> 3,
-    block_column = x >> 2,
-    block_x = x & 3;
+    y = pad >> 3;
   return
-    block_column * 12 + // right side is an octave higher
-    block_x +
-    y * 3.5; // shift rows by alternating 3/4 semitones
+    x + y * 3.5; // shift rows by alternating 3/4 semitones
 }
 
 void write_text(int x, int y, seg_t s) {

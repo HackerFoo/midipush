@@ -980,7 +980,7 @@ DTASK_ENABLE(transpose) {
   show_octave(*DREF(transpose));
 }
 
-const int upper_limit = 128 - 40 + ALIGNMENT_PADDING(128 - 40, 12);
+const int upper_limit = 128 - 24 + ALIGNMENT_PADDING(128 - 24, 12);
 
 DTASK(transpose, int8_t) {
   const control_change_t *cc = DREF(control_change);
